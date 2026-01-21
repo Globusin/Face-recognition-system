@@ -147,6 +147,8 @@ dmypy.json
 # IDE
 .vscode/
 .idea/
+*.swp
+*.swo
 
 # Data folder - we probably don't want to commit actual image files
 data/*.jpg
