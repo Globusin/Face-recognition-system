@@ -52,6 +52,7 @@ def compare_faces(known_face_img_path, check_face_img_path):
         print("Лица совпадают!")
     else:
         print("Лица не совпадают!")
+        print("test")
 
 def main():
     recognition()
