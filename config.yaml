@@ -19,3 +19,5 @@ database:
   name: "face-recognition"
   user: "postgres"
   password: "fID3P8zg"
+
+similarity: 0.15
