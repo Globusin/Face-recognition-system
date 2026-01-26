@@ -7,8 +7,11 @@ from pathlib import Path
 sys.path.append(str(Path(__file__).parent.parent))
 
 from utils.video_capture import capture_image
+from utils.db_connect import add_user_embedding, find_similar_embeddings
+from utils.config_loader import load_config
 
-user_image_path = os.path.join('data', 'user_image.jpg')
+config = load_config()
+user_image_path = os.path.join(config.get('image', {}).get('output_dir', 0), config.get('image', {}).get('filename', 0))
 
 def recognition():
     if not os.path.exists(user_image_path):
@@ -53,8 +56,34 @@ def compare_faces(known_face_img_path, check_face_img_path):
     else:
         print("Лица не совпадают!")
 
+def create_embeddings_from_camera():
+    # Захватываем изображение с камеры
+    camera_image_path = os.path.join('data', 'tmp_image.jpg')
+    success = capture_image(camera_image_path)
+    
+    if not success:
+        logging.error("Не удалось получить изображение с камеры для создания эмбэддингов")
+        return None
+    
+    # Загружаем изображение
+    image = face_recognition.load_image_file(camera_image_path)
+    
+    # Получаем эмбэддинги лиц на изображении
+    embeddings = face_recognition.face_encodings(image)
+    
+    if len(embeddings) == 0:
+        logging.warning("На изображении с камеры не найдено лиц")
+        return None
+    
+    return embeddings
+
+def save_embedding(embedding):
+    add_user_embedding(embedding)
+
 def main():
-    recognition()
+    embeddings = create_embeddings_from_camera()
+    # save_embedding(embeddings[0])
+    print(find_similar_embeddings(embeddings[0]))
 
 if __name__ == '__main__':
     main()

@@ -1,0 +1,21 @@
+
+camera:
+  index: 2
+  
+  # Разрешение камеры (опционально)
+  resolution:
+    width: 1280
+    height: 720
+
+# Параметры сохранения изображений
+image:
+ output_dir: "data"
+ filename: "user_image.jpg"
+
+# Параметры базы данных
+database:
+  host: "localhost"
+  port: 5433
+  name: "face-recognition"
+  user: "postgres"
+  password: "fID3P8zg"
