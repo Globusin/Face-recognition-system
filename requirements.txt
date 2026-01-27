@@ -1,0 +1,6 @@
+psycopg[binary]
+numpy
+face_recognition
+opencv-python
+pgvector
+pyyaml
