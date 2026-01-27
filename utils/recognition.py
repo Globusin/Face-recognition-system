@@ -36,9 +36,32 @@ def create_embeddings_from_camera():
 def save_embedding(embedding):
     add_user_embedding(embedding)
 
-def check_face_exist_in_db_by_embedding(embedding):
-    id, distance = find_similar_embeddings(embedding)[0]
+def check_for_similar_embeddings_in_db(embedding):
+    results = find_similar_embeddings(embedding)
+    if not results:
+        return False, None
+    
+    id, distance = results[0]
     similarity = config.get('similarity', 0.15)
-    if (distance < similarity):
-        return True
-    return False
+    
+    if distance < similarity:
+        return True, id, distance
+    return False, None, None
+
+def recognize_face_from_camera():
+    """Распознает лицо с камеры и проверяет его наличие в базе данных"""
+
+    embeddings = create_embeddings_from_camera()
+    
+    if embeddings is None or len(embeddings) == 0:
+        logging.warning("Не удалось получить эмбэддинги с камеры")
+        return False, None, None
+    
+    embedding = embeddings[0]
+    is_known, user_id, distance = check_for_similar_embeddings_in_db(embedding)
+    
+    if is_known:
+        return True, user_id, distance
+            
+    
+    return False, None, None
