@@ -9,8 +9,8 @@ camera:
 
 # Параметры сохранения изображений
 image:
- output_dir: "data"
- filename: "user_image.jpg"
+  output_dir: "data"
+  filename: "user_image.jpg"
 
 # Параметры базы данных
 database:
@@ -20,4 +20,13 @@ database:
   user: "postgres"
   password: "fID3P8zg"
 
-similarity: 0.15
+# Параметры распознавания
+similarity: 0.15  # Порог схожести (чем меньше, тем строже сравнение)
+
+# Параметры работы системы
+detection_interval: 2  # Интервал в секундах между попытками распознавания
+door_open_time: 5      # Время в секундах, на которое открывается дверь после успешного распознавания
+
+# Настройки логирования
+logging:
+  level: "INFO"  # Уровень логирования: DEBUG, INFO, WARNING, ERROR

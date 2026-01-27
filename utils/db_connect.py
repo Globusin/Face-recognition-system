@@ -1,8 +1,24 @@
 import psycopg
 import numpy as np
+import sys
+from pathlib import Path
+
+sys.path.append(str(Path(__file__).parent.parent))
+
+from utils.config_loader import load_config
 
 def create_connection():
-    return psycopg.connect("host=localhost port=5433 dbname=face-recognition user=postgres password=fID3P8zg")
+    config = load_config()
+    db_config = config.get('database', {})
+    
+    host = db_config.get('host', 'localhost')
+    port = db_config.get('port', 5433)
+    dbname = db_config.get('name', 'face-recognition')
+    user = db_config.get('user', 'postgres')
+    password = db_config.get('password', 'fID3P8zg')
+    
+    connection_string = f"host={host} port={port} dbname={dbname} user={user} password={password}"
+    return psycopg.connect(connection_string)
 
 def initialize_pgvector():
     """Устанавливает расширение pgvector в базе данных"""
