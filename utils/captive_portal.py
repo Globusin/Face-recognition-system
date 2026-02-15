@@ -4,7 +4,7 @@ import http.server
 import socketserver
 from threading import Thread
 
-def setup_captive_portal(port=80, html_content=None):
+def setup_captive_portal(port=4449, html_content=None):
     if html_content is None:
         html_content = """
         <html>
@@ -35,9 +35,9 @@ def setup_captive_portal(port=80, html_content=None):
     # Настройка iptables для перенаправления всех HTTP-запросов на наш портал
     try:
         print("Настраиваем iptables для captive portal...")
-        # Пример: перенаправление всех запросов на порт 80 на localhost
+        # Пример: перенаправление всех запросов на порт на localhost
         subprocess.run(
-            ["iptables", "-t", "nat", "-A", "PREROUTING", "-p", "tcp", "--dport", "80", "-j", "DNAT", "--to-destination", "127.0.0.1:80"],
+            ["iptables", "-t", "nat", "-A", "PREROUTING", "-p", "tcp", "--dport", str(port), "-j", "DNAT", "--to-destination", "127.0.0.1:80"],
             check=True
         )
         print("Iptables правило добавлено.")

@@ -38,8 +38,8 @@ def main():
     create_wifi_hotspot()
     
     # Настраиваем captive portal
-    # print("Настройка captive portal...")
-    # setup_captive_portal()
+    print("Настройка captive portal...")
+    setup_captive_portal()
     
     print("Запуск Flask-приложения на порту 5000...")
     print("Подключитесь к точке доступа 'SmartDoor-Auth' с паролем '12345678'")

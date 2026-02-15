@@ -27,41 +27,25 @@ def start_hotspot(ssid, password):
         ifname = get_wifi_interface_name()
         logging.info("Получен интерфейс: " + ifname)
 
-        cmd = [
-            "nmcli",
-            "connection",
-            "add",
-            "type", "wifi",
-            "ifname", ifname,
-            "con-name", "Hotspot",
-            "autoconnect", "no",
-            "wifi.mode", "ap",
-            "wifi.ssid", ssid,
-            "wifi.band", "bg",
-            "ipv4.method", "shared",
-            "ipv4.addresses", ""  # Не указываем шлюз - нет доступа к интернету
-        ]
-        logging.info("Создание новой точки доступа")
-        result = subprocess.run(cmd, check=True, capture_output=True, text=True)
-        logging.info("Точка доступа создана успешно")
-
-        # Устанавливаем пароль
-        logging.info("Установка безопасности WPA-PSK")
-        subprocess.run([
-            "nmcli", "connection", "modify", "Hotspot",
-            "wifi-sec.key-mgmt", "wpa-psk"
-        ], check=True, capture_output=True, text=True)
-        subprocess.run([
-            "nmcli", "connection", "modify", "Hotspot",
-            "wifi-sec.psk", password
-        ], check=True, capture_output=True, text=True)
-        logging.info("Пароль установлен")
-
         # Запускаем точку доступа
         logging.info("Запуск точки доступа")
         subprocess.run(["rfkill", "unblock", "wifi"], check=True)
         subprocess.run(["nmcli", "radio", "wifi", "on"], check=True)
-        subprocess.run(["nmcli", "connection", "up", "Hotspot"], check=True, capture_output=True, text=True)
+
+        cmd = [
+            "nmcli",
+            "device",
+            "wifi",
+            "hotspot",
+            "ifname", ifname,
+            "ssid", ssid,
+            "password", password
+        ]
+
+        logging.info("Создание новой точки доступа")
+        result = subprocess.run(cmd, check=True, capture_output=True, text=True)
+        logging.info("Точка доступа создана успешно")
+
         logging.info(f"Wi-Fi хотспот '{ssid}' успешно запущен")
 
     except subprocess.CalledProcessError as e:
