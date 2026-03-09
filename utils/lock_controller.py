@@ -2,6 +2,8 @@ import logging
 import time
 from typing import Optional
 
+from utils.logger import log_info, log_error
+
 class LockController:
     """Класс для управления механическим замком"""
     
@@ -14,17 +16,17 @@ class LockController:
         """Открывает замок"""
         try:
             # Здесь будет реализация открытия замка
-            self.logger.info("Отправка команды на открытие замка...")
+            log_info("Отправка команды на открытие замка...", logger=self.logger)
             
             # Заглушка
             time.sleep(0.1)
             
             self.is_locked = False
-            self.logger.info("Замок успешно открыт")
+            log_info("Замок успешно открыт", logger=self.logger)
             return True
             
         except Exception as e:
-            self.logger.error(f"Ошибка при открытии замка: {e}")
+            log_error(f"Ошибка при открытии замка: {e}", logger=self.logger)
             return False
     
     def lock(self) -> bool:
@@ -36,17 +38,17 @@ class LockController:
         """
         try:
             # Здесь будет реализация закрытия замка
-            self.logger.info("Отправка команды на закрытие замка...")
+            log_info("Отправка команды на закрытие замка...", logger=self.logger)
             
             # Заглушка
             time.sleep(0.1)
             
             self.is_locked = True
-            self.logger.info("Замок успешно закрыт")
+            log_info("Замок успешно закрыт", logger=self.logger)
             return True
             
         except Exception as e:
-            self.logger.error(f"Ошибка при закрытии замка: {e}")
+            log_error(f"Ошибка при закрытии замка: {e}", logger=self.logger)
             return False
     
     def is_unlocked(self) -> bool:

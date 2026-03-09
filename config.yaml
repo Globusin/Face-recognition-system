@@ -1,6 +1,6 @@
 
 camera:
-  index: 2
+  index: 0
   
   # Разрешение камеры (опционально)
   resolution:
@@ -19,6 +19,11 @@ database:
   name: "face-recognition"
   user: "postgres"
   password: "fID3P8zg"
+
+# Параметры точки доступа
+hotspot:
+  ssid: "DoorApp"
+  password: "12345678"
 
 # Параметры распознавания
 similarity: 0.15  # Порог схожести (чем меньше, тем строже сравнение)

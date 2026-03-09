@@ -1,6 +1,5 @@
 # app.py - Основное приложение
 from flask import Flask, jsonify, render_template_string
-import subprocess
 import os
 import sys
 from pathlib import Path
@@ -8,7 +7,6 @@ from pathlib import Path
 sys.path.append(str(Path(__file__).parent.parent))
 
 from utils.recognition import create_embeddings_from_camera, save_embedding
-from utils.hotspot import start_hotspot
 
 app = Flask(__name__)
 app.secret_key = os.urandom(24)
@@ -104,26 +102,6 @@ INDEX_TEMPLATE = '''
 </body>
 </html>
 '''
-
-# Настройка iptables для перехвата трафика
-def setup_captive_portal():
-    # Перенаправление HTTP трафика на наш порт
-    subprocess.run([
-        'iptables', '-t', 'nat', '-A', 'PREROUTING',
-        '-i', 'wlan0', '-p', 'tcp', '--dport', '80',
-        '-j', 'REDIRECT', '--to-port', '5000'
-    ], capture_output=True)
-    # Блокируем весь исходящий трафик в интернет
-    subprocess.run([
-        'iptables', '-A', 'FORWARD', '-i', 'wlan0',
-        '-o', 'eth0', '-j', 'DROP'
-    ], capture_output=True)
-
-def create_wifi_hotspot():
-    ssid = "SmartDoor-Auth"
-    password = "12345678"
-
-    start_hotspot(ssid, password)
 
 @app.route('/')
 def captive_redirect():

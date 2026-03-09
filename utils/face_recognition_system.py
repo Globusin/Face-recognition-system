@@ -9,6 +9,7 @@ sys.path.append(str(Path(__file__).parent.parent))
 from utils.recognition import recognize_face_from_camera
 from utils.lock_controller import initialize_lock_controller, LockController
 from utils.config_loader import load_config
+from utils.logger import log_info, log_error, log_warning
 
 
 class FaceRecognitionSystem:
@@ -29,20 +30,20 @@ class FaceRecognitionSystem:
     def authenticate_user(self) -> Tuple[bool, Optional[int], Optional[float]]:
         """Аутентифицирует пользователя по лицу"""
 
-        self.logger.info("Начало процесса аутентификации пользователя")
+        log_info("Начало процесса аутентификации пользователя", logger=self.logger)
         
         try:
             is_recognized, user_id, distance = recognize_face_from_camera()
             
             if is_recognized:
-                self.logger.info(f"Пользователь распознан: ID {user_id}, расстояние {distance:.4f}")
+                log_info(f"Пользователь распознан: ID {user_id}, расстояние {distance:.4f}", logger=self.logger)
                 return True, user_id, distance
             else:
-                self.logger.info("Пользователь не распознан или лицо не обнаружено")
+                log_info("Пользователь не распознан или лицо не обнаружено", logger=self.logger)
                 return False, None, None
                 
         except Exception as e:
-            self.logger.error(f"Ошибка при аутентификации пользователя: {e}")
+            log_error(f"Ошибка при аутентификации пользователя: {e}", logger=self.logger)
             return False, None, None
     
     def process_authentication(self) -> bool:
@@ -51,31 +52,31 @@ class FaceRecognitionSystem:
         is_authenticated, user_id, distance = self.authenticate_user()
         
         if is_authenticated:
-            self.logger.info(f"Пользователь распознан, id вектора: {user_id}")
+            log_info(f"Пользователь распознан, id вектора: {user_id}", logger=self.logger)
             
             if self.lock_controller.unlock():
-                self.logger.info("Замок успешно открыт")
+                log_info("Замок успешно открыт", logger=self.logger)
                 
                 door_open_time = self.config.get('door_open_time', 5)
                 time.sleep(door_open_time)
                 
                 if self.lock_controller.lock():
-                    self.logger.info("Замок успешно закрыт")
+                    log_info("Замок успешно закрыт", logger=self.logger)
                     return True
                 else:
-                    self.logger.error("Ошибка при закрытии замка")
+                    log_error("Ошибка при закрытии замка", logger=self.logger)
                     return False
             else:
-                self.logger.error("Ошибка при открытии замка")
+                log_error("Ошибка при открытии замка", logger=self.logger)
                 return False
         else:
-            self.logger.warning("Аутентификация не удалась, замок остается закрытым")
+            log_warning("Аутентификация не удалась, замок остается закрытым", logger=self.logger)
             return False
     
     def start_infinity_monitoring(self):
         """Запускает непрерывный режим мониторинга для распознавания лиц"""
 
-        self.logger.info("Запуск непрерывного режима мониторинга")
+        log_info("Запуск непрерывного режима мониторинга", logger=self.logger)
         self.running = True
         
         detection_interval = self.config.get('detection_interval', 2)
@@ -86,26 +87,26 @@ class FaceRecognitionSystem:
                 time.sleep(detection_interval)
                 
         except KeyboardInterrupt:
-            self.logger.info("Остановка непрерывного режима мониторинга по запросу пользователя")
+            log_info("Остановка непрерывного режима мониторинга по запросу пользователя", logger=self.logger)
         except Exception as e:
-            self.logger.error(f"Ошибка в непрерывном режиме мониторинга: {e}")
+            log_error(f"Ошибка в непрерывном режиме мониторинга: {e}", logger=self.logger)
         finally:
             self.stop()
     
     def stop(self):
         """Останавливает систему"""
-        self.logger.info("Остановка системы распознавания лиц")
+        log_info("Остановка системы распознавания лиц", logger=self.logger)
         self.running = False
         
         if not self.lock_controller.is_locked:
             if self.lock_controller.lock():
-                self.logger.info("Замок закрыт при завершении работы системы")
+                log_info("Замок закрыт при завершении работы системы", logger=self.logger)
             else:
-                self.logger.error("Не удалось закрыть замок при завершении работы системы")
+                log_error("Не удалось закрыть замок при завершении работы системы", logger=self.logger)
     
     def test_mode(self):
         """Режим тестирования системы"""
-        self.logger.info("Запуск тестового режима")
+        log_info("Запуск тестового режима", logger=self.logger)
         
         print("Тестирование системы распознавания лиц")
         

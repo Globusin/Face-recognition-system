@@ -1,4 +1,3 @@
-#!/usr/bin/env python3
 """
 Запуск основного приложения с функциональностью точки доступа
 """
@@ -7,11 +6,12 @@ import signal
 import atexit
 from pathlib import Path
 
-# Добавляем путь к директории src для правильного импорта
-sys.path.append(str(Path(__file__).parent))
+sys.path.append(str(Path(__file__).parent.parent))
 
-from app import app, create_wifi_hotspot
-from utils.captive_portal import setup_captive_portal
+from src.app import app
+from utils.hotspot import start_hotspot
+from utils.config_loader import load_config
+from utils.logger import log_info, log_error
 
 # Список активных процессов для корректного завершения
 active_processes = []
@@ -25,27 +25,26 @@ def cleanup():
         except:
             pass
 
+def create_hotsopt():
+    config = load_config()
+    hotspot_config = config.get('hotspot', {})
+    ssid = hotspot_config.get('ssid', 'DoorApp')
+    password = hotspot_config.get('password', '12345678')
+    
+    start_hotspot(ssid, password)
+
 def main():
     # Регистрируем функцию очистки
     atexit.register(cleanup)
     signal.signal(signal.SIGINT, lambda s, f: cleanup())
     signal.signal(signal.SIGTERM, lambda s, f: cleanup())
 
-    print("Запуск системы аутентификации с точкой доступа...")
-    
     # Создаем точку доступа Wi-Fi
-    print("Создание точки доступа...")
-    create_wifi_hotspot()
-    
-    # Настраиваем captive portal
-    print("Настройка captive portal...")
-    setup_captive_portal()
-    
-    print("Запуск Flask-приложения на порту 5000...")
-    print("Подключитесь к точке доступа 'SmartDoor-Auth' с паролем '12345678'")
-    print("Откройте браузер и перейдите по любому адресу для аутентификации")
+    log_info("Запуск точки доступа Wi-Fi")
+    create_hotsopt()
     
     # Запускаем Flask-приложение
+    log_info("Запуск Flask-приложения")
     app.run(host='0.0.0.0', port=5000, debug=False)
 
 if __name__ == '__main__':

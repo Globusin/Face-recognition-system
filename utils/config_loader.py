@@ -2,6 +2,8 @@ import yaml
 import logging
 from pathlib import Path
 
+from utils.logger import log_warning
+
 def load_config():
     """Загружает конфигурационный файл"""
     config_path = Path(__file__).parent.parent / 'config.yaml'
@@ -9,5 +11,5 @@ def load_config():
         with open(config_path, 'r', encoding='utf-8') as file:
             return yaml.safe_load(file)
     else:
-        logging.warning(f"Конфигурационный файл {config_path} не найден, используются значения по умолчанию")
+        log_warning(f"Конфигурационный файл {config_path} не найден, используются значения по умолчанию")
         return {}

@@ -8,6 +8,7 @@ from pathlib import Path
 sys.path.append(str(Path(__file__).parent.parent))
 
 from utils.config_loader import load_config
+from utils.logger import log_info, log_error
 
 def capture_image(output_path=None, camera_index=None):
     config = load_config()
@@ -23,7 +24,7 @@ def capture_image(output_path=None, camera_index=None):
         height = resolution.get('height', 720)
         cap.set(cv2.CAP_PROP_FRAME_WIDTH, width)
         cap.set(cv2.CAP_PROP_FRAME_HEIGHT, height)
-        logging.info(f"Установлено разрешение камеры: {width}x{height}")
+        log_info(f"Установлено разрешение камеры: {width}x{height}")
     
     ret, frame = cap.read()
 
@@ -33,11 +34,11 @@ def capture_image(output_path=None, camera_index=None):
             output_path = os.path.join('data', 'current_image.jpg')
         
         cv2.imwrite(output_path, frame)
-        logging.info(f"Изображение сохранено как '{output_path}' с камеры {camera_index}")
+        log_info(f"Изображение сохранено как '{output_path}' с камеры {camera_index}")
         cap.release()
         return True
     else:
-        logging.error(f"Не удалось получить изображение с камеры {camera_index}")
+        log_error(f"Не удалось получить изображение с камеры {camera_index}")
         cap.release()
         return False
 

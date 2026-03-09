@@ -3,6 +3,8 @@ import re
 import sys
 import logging
 
+from utils.logger import log_info, log_warning, log_error
+
 # Настройка логирования
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 
@@ -15,20 +17,20 @@ def start_hotspot(ssid, password):
         password (str): Пароль для подключения к сети
     """
     try:
-        logging.info(f"Попытка создания Wi-Fi хотспота с SSID: {ssid}")
+        log_info(f"Попытка создания Wi-Fi хотспота с SSID: {ssid}")
         
         # Останавливаем возможную предыдущую точку доступа
-        logging.info("Остановка предыдущей точки доступа (если существует)")
+        log_info("Остановка предыдущей точки доступа (если существует)")
         result = subprocess.run(["nmcli", "connection", "down", "Hotspot"], check=False, capture_output=True, text=True)
         if result.returncode != 0:
-            logging.warning(f"Не удалось отключить предыдущую точку доступа: {result.stderr}")
+            log_warning(f"Не удалось отключить предыдущую точку доступа: {result.stderr}")
         
-        logging.info("Получение интерфейса")
+        log_info("Получение интерфейса")
         ifname = get_wifi_interface_name()
-        logging.info("Получен интерфейс: " + ifname)
+        log_info("Получен интерфейс: " + ifname)
 
         # Запускаем точку доступа
-        logging.info("Запуск точки доступа")
+        log_info("Запуск точки доступа")
         subprocess.run(["rfkill", "unblock", "wifi"], check=True)
         subprocess.run(["nmcli", "radio", "wifi", "on"], check=True)
 
@@ -42,17 +44,17 @@ def start_hotspot(ssid, password):
             "password", password
         ]
 
-        logging.info("Создание новой точки доступа")
+        log_info("Создание новой точки доступа")
         result = subprocess.run(cmd, check=True, capture_output=True, text=True)
-        logging.info("Точка доступа создана успешно")
+        log_info("Точка доступа создана успешно")
 
-        logging.info(f"Wi-Fi хотспот '{ssid}' успешно запущен")
+        log_info(f"Wi-Fi хотспот '{ssid}' успешно запущен")
 
     except subprocess.CalledProcessError as e:
-        logging.error(f"Ошибка при создании Wi-Fi хотспота: {e}")
+        log_error(f"Ошибка при создании Wi-Fi хотспота: {e}")
         sys.exit(1)
     except Exception as e:
-        logging.error(f"Неожиданная ошибка: {e}")
+        log_error(f"Неожиданная ошибка: {e}")
         sys.exit(1)
 
 
