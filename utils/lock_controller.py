@@ -72,16 +72,3 @@ def initialize_lock_controller(config: Optional[dict] = None) -> LockController:
         LockController: Экземпляр контроллера замка
     """
     return LockController(config)
-
-
-if __name__ == "__main__":
-    # Тестирование функционала замка
-    lock = LockController()
-    
-    print(f"Замок изначально закрыт: {lock.is_locked}")
-    
-    if lock.unlock():
-        print("Замок успешно открыт")
-    
-    if lock.lock():
-        print("Замок успешно закрыт")

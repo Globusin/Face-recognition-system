@@ -8,7 +8,7 @@ import numpy as np
 sys.path.append(str(Path(__file__).parent.parent))
 
 from utils.config_loader import load_config
-from utils.logger import log_info, log_error, log_debug
+from utils.logger import log_info, log_error
 
 def capture_image(output_path=None, timeout=10):
     config = load_config()
