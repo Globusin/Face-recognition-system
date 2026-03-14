@@ -8,7 +8,7 @@ import numpy as np
 sys.path.append(str(Path(__file__).parent.parent))
 
 from utils.config_loader import load_config
-from utils.logger import log_info, log_error
+from utils.logger import log_info, log_error, log_debug
 
 def capture_image(output_path=None, timeout=10):
     config = load_config()
@@ -22,7 +22,7 @@ def capture_image(output_path=None, timeout=10):
         height = resolution.get('height', 720)
         cap.set(cv2.CAP_PROP_FRAME_WIDTH, width)
         cap.set(cv2.CAP_PROP_FRAME_HEIGHT, height)
-        log_info(f"Установлено разрешение камеры: {width}x{height}")
+        log_debug(f"Установлено разрешение камеры: {width}x{height}")
     
     face_cascade = cv2.CascadeClassifier(cv2.data.haarcascades + 'haarcascade_frontalface_default.xml')
     if face_cascade.empty():
@@ -33,7 +33,7 @@ def capture_image(output_path=None, timeout=10):
     best_frame = None
     start_time = time.time()
     
-    log_info(f"Поиск лучшего изображения (таймаут: {timeout}с)")
+    log_debug(f"Поиск лучшего изображения (таймаут: {timeout}с)")
     
     while time.time() - start_time < timeout:
         ret, frame = cap.read()

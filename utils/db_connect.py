@@ -6,7 +6,7 @@ from pathlib import Path
 sys.path.append(str(Path(__file__).parent.parent))
 
 from utils.config_loader import load_config
-from utils.logger import log_info
+from utils.logger import log_info, log_debug, log_error
 
 def create_connection():
     config = load_config()
@@ -28,7 +28,7 @@ def initialize_pgvector():
             # Устанавливаем расширение pgvector
             cur.execute("CREATE EXTENSION IF NOT EXISTS vector;")
             conn.commit()
-            log_info("Расширение pgvector установлено")
+            log_debug("Расширение pgvector установлено")
 
 def create_embeddings_table():
     initialize_pgvector()
@@ -46,7 +46,7 @@ def create_embeddings_table():
             table_exists = cur.fetchone()[0]
             
             if table_exists:
-                log_info("Таблица embeddings уже существует")
+                log_debug("Таблица embeddings уже существует")
                 return
             
             cur.execute("""
@@ -58,7 +58,7 @@ def create_embeddings_table():
             """)
             
             conn.commit()
-            log_info("Таблица embeddings")
+            log_debug("Таблица embeddings")
 
 def add_user_embedding(embedding):
     with create_connection() as conn:
@@ -93,4 +93,11 @@ def embedding_to_string(embedding):
     return '[' + ','.join(map(str, embedding)) + ']' if isinstance(embedding, (list, np.ndarray)) else str(embedding)
 
 if __name__ == "__main__":
-    create_embeddings_table()
+    log_debug("Создание таблицы embeddings, если она не существует.")
+    
+    try:
+        create_embeddings_table()
+        log_debug("База данных успешно инициализирована!")
+    except Exception as e:
+        log_error(f"Ошибка при инициализации базы данных: {e}")
+        sys.exit(1)

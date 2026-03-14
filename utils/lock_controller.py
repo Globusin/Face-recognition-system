@@ -2,7 +2,7 @@ import logging
 import time
 from typing import Optional
 
-from utils.logger import log_info, log_error
+from utils.logger import log_info, log_error, log_debug
 
 class LockController:
     """Класс для управления механическим замком"""
@@ -16,7 +16,7 @@ class LockController:
         """Открывает замок"""
         try:
             # Здесь будет реализация открытия замка
-            log_info("Отправка команды на открытие замка...", logger=self.logger)
+            log_debug("Отправка команды на открытие замка...", logger=self.logger)
             
             # Заглушка
             time.sleep(0.1)
@@ -38,7 +38,7 @@ class LockController:
         """
         try:
             # Здесь будет реализация закрытия замка
-            log_info("Отправка команды на закрытие замка...", logger=self.logger)
+            log_debug("Отправка команды на закрытие замка...", logger=self.logger)
             
             # Заглушка
             time.sleep(0.1)

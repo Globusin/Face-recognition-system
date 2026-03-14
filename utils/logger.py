@@ -1,17 +1,29 @@
 import logging
 import sys
-from datetime import datetime
 from pathlib import Path
 
+# Импортируем загрузчик конфигурации
+from utils.config_loader import load_config
+
+# Загружаем конфигурацию при импорте модуля
+_config = None
+
+def _get_config():
+    """Загружает конфигурацию, если она еще не загружена"""
+    global _config
+    if _config is None:
+        _config = load_config()
+    return _config
+
 # Настройка глобального логирования
-def setup_logger(name=__name__, level=logging.INFO, log_file=None):
+def setup_logger(name=__name__, level=None, log_file=None):
     """
     Создает и настраивает логгер с заданными параметрами
     
     Args:
         name (str): Имя логгера
-        level: Уровень логирования
-        log_file (str): Путь к файлу лога (опционально)
+        level: Уровень логирования (если None, будет взят из конфига)
+        log_file (str): Путь к файлу лога (если None, будет взят из конфига)
         
     Returns:
         logging.Logger: Настроенный логгер
@@ -21,6 +33,15 @@ def setup_logger(name=__name__, level=logging.INFO, log_file=None):
     # Избегаем дублирования хендлеров
     if logger.handlers:
         return logger
+    
+    # Получаем настройки из конфига, если не указаны явно
+    config = _get_config()
+    if level is None:
+        level_str = config.get('logging', {}).get('level', 'INFO')
+        level = getattr(logging, level_str.upper(), logging.INFO)
+    
+    if log_file is None:
+        log_file = config.get('logging', {}).get('file', None)
     
     logger.setLevel(level)
     
