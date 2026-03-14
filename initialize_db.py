@@ -1,6 +1,3 @@
-#!/usr/bin/env python3
-"""Скрипт для инициализации базы данных"""
-
 import sys
 from pathlib import Path
 
