@@ -9,6 +9,7 @@ sys.path.append(str(Path(__file__).parent.parent))
 from utils.video_capture import capture_image
 from utils.db_connect import add_user_embedding, find_similar_embeddings
 from utils.config_loader import load_config
+from utils.logger import log_error, log_warning
 
 config = load_config()
 
@@ -18,7 +19,7 @@ def create_embeddings_from_camera():
     success = capture_image(camera_image_path)
     
     if not success:
-        logging.error("Не удалось получить изображение с камеры для создания эмбэддингов")
+        log_error("Не удалось получить изображение с камеры для создания эмбэддингов")
         return None
     
     # Загружаем изображение
@@ -28,7 +29,7 @@ def create_embeddings_from_camera():
     embeddings = face_recognition.face_encodings(image)
     
     if len(embeddings) == 0:
-        logging.warning("На изображении с камеры не найдено лиц")
+        log_warning("На изображении с камеры не найдено лиц")
         return None
     
     return embeddings
@@ -54,7 +55,7 @@ def recognize_face_from_camera():
     embeddings = create_embeddings_from_camera()
     
     if embeddings is None or len(embeddings) == 0:
-        logging.warning("Не удалось получить эмбэддинги с камеры")
+        log_warning("Не удалось получить эмбэддинги с камеры")
         return False, None, None
     
     embedding = embeddings[0]

@@ -6,6 +6,7 @@ from pathlib import Path
 sys.path.append(str(Path(__file__).parent.parent))
 
 from utils.config_loader import load_config
+from utils.logger import log_info
 
 def create_connection():
     config = load_config()
@@ -27,7 +28,7 @@ def initialize_pgvector():
             # Устанавливаем расширение pgvector
             cur.execute("CREATE EXTENSION IF NOT EXISTS vector;")
             conn.commit()
-            print("Расширение pgvector установлено")
+            log_info("Расширение pgvector установлено")
 
 def create_embeddings_table():
     initialize_pgvector()
@@ -45,7 +46,7 @@ def create_embeddings_table():
             table_exists = cur.fetchone()[0]
             
             if table_exists:
-                print("Таблица embeddings уже существует")
+                log_info("Таблица embeddings уже существует")
                 return
             
             cur.execute("""
@@ -57,7 +58,7 @@ def create_embeddings_table():
             """)
             
             conn.commit()
-            print("Таблица embeddings")
+            log_info("Таблица embeddings")
 
 def add_user_embedding(embedding):
     with create_connection() as conn:
@@ -70,7 +71,7 @@ def add_user_embedding(embedding):
             """, (embedding_str,))
             
             conn.commit()
-            print(f"Эмбэддинг успешно добавлен")
+            log_info(f"Эмбэддинг успешно добавлен")
 
 def find_similar_embeddings(target_embedding, limit=1):
     """Находит наиболее похожие эмбэддинги в базе данных"""
