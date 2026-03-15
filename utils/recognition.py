@@ -13,17 +13,9 @@ from utils.logger import log_error, log_warning
 
 config = load_config()
 
-def create_embeddings_from_camera():
-    # Захватываем изображение с камеры
-    camera_image_path = os.path.join('data', 'tmp_image.jpg')
-    success = capture_image(camera_image_path)
-    
-    if not success:
-        log_error("Не удалось получить изображение с камеры для создания эмбэддингов")
-        return None
-    
+def get_embeddings_from_image(image_path: str):
     # Загружаем изображение
-    image = face_recognition.load_image_file(camera_image_path)
+    image = face_recognition.load_image_file(image_path)
     
     # Получаем эмбэддинги лиц на изображении
     embeddings = face_recognition.face_encodings(image)
@@ -34,8 +26,19 @@ def create_embeddings_from_camera():
     
     return embeddings
 
+def create_embeddings_from_camera():
+    # Захватываем изображение с камеры
+    camera_image_path = os.path.join('data', 'tmp_image.jpg')
+    success = capture_image(camera_image_path)
+    
+    if not success:
+        log_error("Не удалось получить изображение с камеры для создания эмбэддингов")
+        return None
+    
+    return get_embeddings_from_image(camera_image_path)
+
 def save_embedding(embedding):
-    add_user_embedding(embedding)
+    return add_user_embedding(embedding)
 
 def check_for_similar_embeddings_in_db(embedding):
     results = find_similar_embeddings(embedding)

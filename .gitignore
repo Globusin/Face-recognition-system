@@ -157,6 +157,10 @@ data/*.png
 data/*.gif
 data/*.bmp
 
+# Images folder - ignoring all image files
+images/
+images/*/
+
 # Other common files
 .DS_Store
 Thumbs.db
