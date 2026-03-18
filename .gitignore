@@ -161,6 +161,15 @@ data/*.bmp
 images/
 images/*/
 
+# Node.js/Vue.js specific
+node_modules/
+dist/
+.nuxt/
+.vite/
+.env
+*.log
+.env.local
+
 # Other common files
 .DS_Store
 Thumbs.db
