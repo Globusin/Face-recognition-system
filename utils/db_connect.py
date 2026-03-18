@@ -68,10 +68,13 @@ def add_user_embedding(embedding):
             cur.execute("""
                 INSERT INTO embeddings (embedding)
                 VALUES (%s)
+                RETURNING id
             """, (embedding_str,))
             
+            user_id = cur.fetchone()[0]
             conn.commit()
-            log_info(f"Эмбэддинг успешно добавлен")
+            log_info(f"Эмбэддинг успешно добавлен с ID: {user_id}")
+            return user_id
 
 def find_similar_embeddings(target_embedding, limit=1):
     """Находит наиболее похожие эмбэддинги в базе данных"""
