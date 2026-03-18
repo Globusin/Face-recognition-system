@@ -13,51 +13,101 @@ from utils.logger import log_debug
 
 
 def test_recognition(images_path):
-    total_recognized = 0
-    total_images = 0
+    # Общая статистика
+    total_stats = {
+        'total_images': 0,
+        'total_processed': 0,
+        'total_recognized': 0,
+        'total_errors': 0,
+        'total_unknown': 0,
+        'by_person': {}  # Статистика по каждому человеку
+    }
     
     for folder in os.listdir(images_path):
         folder_path = os.path.join(images_path, folder)
-
-        recognized = 0 
-        sum = 0
-        expected_user_id = None  # Инициализируем переменную для хранения ожидаемого ID пользователя
+        person_name = folder
         
-        for i, image in enumerate(os.listdir(folder_path)):
+        # Статистика по текущему человеку
+        person_stats = {
+            'total': 0,
+            'processed': 0,
+            'recognized': 0,
+            'errors': 0,
+            'unknown': 0,
+            'wrong_person': 0,
+            'distances': []
+        }
+        
+        expected_user_id = None
+        
+        for image in os.listdir(folder_path):
             image_path = os.path.join(folder_path, image)
             embeddings = get_embeddings_from_image(image_path)
-
-            sum += 1
-
-            if embeddings == None:
+            
+            person_stats['total'] += 1
+            
+            if embeddings is None:
+                person_stats['errors'] += 1
                 continue
-
-            if expected_user_id == None:
-                # Сохраняем эмбеддинг и получаем ID пользователя
+            
+            if expected_user_id is None:
+                # Сохраняем эмбеддинг в БД и получаем ID пользователя
                 expected_user_id = save_embedding(embeddings[0])
-                sum -= 1
+                person_stats['total'] -= 1
                 continue
 
+            person_stats['processed'] += 1
+            
             is_known, user_id, distance = check_for_similar_embeddings_in_db(embeddings[0])
-
-            # Проверяем, что пользователь известен и ID совпадает
+            
             if is_known:
                 if str(user_id) == str(expected_user_id):
-                    recognized += 1
+                    person_stats['recognized'] += 1
+                    person_stats['distances'].append(distance)
                 else:
-                    print(f'Ошибка распознования: неверный пользователь, расстояние: {distance}')
+                    person_stats['wrong_person'] += 1
+                    print(f'Ошибка: {person_name} распознан как пользователь c id {user_id}, приавильный id {expected_user_id}, расстояние: {distance:.4f}')
+            else:
+                person_stats['unknown'] += 1
+                print(f'Пользователь {person_name} не распознан, расстояние: {distance:.4f}')
         
-        print(f'Распознано {recognized} из {sum} => {recognized / sum * 100:.2f}%')
+        if person_stats['processed'] > 0:
+            recognition_rate = (person_stats['recognized'] / person_stats['total']) * 100
+            error_rate = (person_stats['wrong_person'] / person_stats['processed']) * 100
+            unknown_rate = (person_stats['unknown'] / person_stats['processed']) * 100
+            avg_distance = np.mean(person_stats['distances']) if person_stats['distances'] else 0
+            
+            print(f"\nСтатистика для {person_name}:")
+            print(f"Всего изображений: {person_stats['total']}")
+            print(f"Обработано: {person_stats['processed']}")
+            print(f"Распознано верно: {person_stats['recognized']} ({recognition_rate:.2f}%)")
+            print(f"Ошибки распознавания: {person_stats['wrong_person']} ({error_rate:.2f}%)")
+            print(f"Не распознано: {person_stats['unknown']} ({unknown_rate:.2f}%)")
+            print(f"Ошибки при загрузке: {person_stats['errors']}")
+            print(f"Среднее расстояние: {avg_distance:.4f}")
+        else:
+            print(f"\nДля {person_name} нет обработанных изображений")
         
         # Обновляем общую статистику
-        total_recognized += recognized
-        total_images += sum
+        total_stats['total_images'] += person_stats['total']
+        total_stats['total_processed'] += person_stats['processed']
+        total_stats['total_recognized'] += person_stats['recognized']
+        total_stats['total_errors'] += person_stats['errors']
+        total_stats['total_unknown'] += person_stats['unknown']
+        total_stats['by_person'][person_name] = person_stats
     
-    if total_images > 0:
-        average_recognition_rate = (total_recognized / total_images) * 100
-        print(f'\nСредний процент распознавания: {average_recognition_rate:.2f}%')
-    else:
-        print('\nНе удалось вычислить средний процент распознавания: нет данных для проверки')
+    # Общая статистика
+    if total_stats['total_processed'] > 0:
+        avg_recognition = (total_stats['total_recognized'] / total_stats['total_processed']) * 100
+        avg_unknown = (total_stats['total_unknown'] / total_stats['total_processed']) * 100
+        
+        print("\n" + "="*50)
+        print(f"Всего изображений: {total_stats['total_images']}")
+        print(f"Успешно обработано: {total_stats['total_processed']}")
+        print(f"Ошибки загрузки: {total_stats['total_errors']}")
+        print(f"\nСредний процент верного распознавания: {avg_recognition:.2f}%")
+        print(f"Средний процент неизвестных лиц: {avg_unknown:.2f}%")
+    return total_stats
 
 def save_lfw_image(image_array, output_path):
     """
@@ -104,22 +154,15 @@ def save_batch_lfw_images(lfw, output_dir):
         save_lfw_image(img, filepath)
 
 
-def run_tests():
-    """
-    Запуск всех тестов
-    """
-    log_debug("Запуск тестов качества распознавания на основе датасета LFW")
+if __name__ == "__main__":
+    log_debug("Запуск теста на основе датасета LFW")
     
     try:
-        # lfw = fetch_lfw_people(min_faces_per_person=100)
-        # save_batch_lfw_images(lfw, 'images')
+        lfw = fetch_lfw_people(min_faces_per_person=100)
+        save_batch_lfw_images(lfw, 'images')
 
         test_recognition('images')
-        log_debug("Все тесты пройдены успешно!")
+        log_debug("Тесть на основе датасета LFW пройден успешно")
     except Exception as e:
-        log_debug(f"Ошибка при выполнении тестов: {e}")
+        log_debug(f"Ошибка при выполнении теста на основе датасета LFW: {e}")
         raise
-
-
-if __name__ == "__main__":
-    run_tests()
