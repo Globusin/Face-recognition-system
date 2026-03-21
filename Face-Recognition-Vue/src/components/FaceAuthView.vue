@@ -1,14 +1,88 @@
 <template>
-  <div class="container">
-    <h1>Добро пожаловать!</h1>
-    <p>Для доступа к сети выполните аутентификацию через систему распознавания лица.</p>
-    
-    <div :class="['status', statusClass]">{{ status }}</div>
-    
-    <button @click="authenticateUser()" class="auth-button">Аутентифицироваться</button>
-    <button @click="addUser()" class="add-user-button">Добавить нового пользователя</button>
-    
-    <div id="result">{{ result }}</div>
+  <div style="display: flex; flex-direction: column; gap: 3vh;">
+    <!-- TABS -->
+    <v-tabs
+      v-model="tab"
+      color="#00d492"
+      slider-color="#00d492"
+      inset
+    >
+      <v-tab value="auth">
+        <div style="display: flex; gap: 4px; align-items: center;">
+          <v-icon icon="mdi-face-recognition"></v-icon>
+          <span>Аутентификация</span>
+        </div>
+      </v-tab>
+      <v-tab value="users">
+        <div style="display: flex; gap: 4px; align-items: center;">
+          <v-icon icon="mdi-account-group"></v-icon>
+          <span>Пользователи</span>
+        </div>
+      </v-tab>
+    </v-tabs>
+
+    <!-- AUTH -->
+    <div v-if="tab == 'auth'" style="display: flex; gap: 4px">
+      <v-sheet :elevation="6" rounded style="padding: 24px; height: 100%; width: 100%; display: flex; flex-direction: column; gap: 10px; border: solid #4a5a8bff;">
+          <div style="display: flex; gap: 4px; align-items: center;">
+            <v-icon icon="mdi-face-recognition"></v-icon>
+            <span style="font-size: 28px;">Распознавание лица</span>
+          </div>
+
+          <span>Нажмите кнопку для аутентификации через распознавание лица</span>
+
+          <v-btn text="Аутентификация" @click="authenticateUser" color="#00d492" style="height: 40px;"></v-btn>
+      </v-sheet>
+
+      <v-sheet :elevation="6" rounded style="padding: 24px; height: 100%; width: 100%; border: solid #4a5a8bff;">
+        <div style="display: flex; flex-direction: column;">
+          <span>Статус</span>
+          <span>{{ status }}</span>
+        </div>
+      </v-sheet>
+    </div>
+
+    <!-- USERS -->
+    <div v-if="tab == 'users'" style="display: flex; gap: 4px">
+      <v-sheet :elevation="6" rounded style="padding: 24px; height: 100%; width: 30%; display: flex; flex-direction: column; gap: 10px; border: solid #4a5a8bff;">
+        <div style="display: flex; gap: 4px; align-items: center;">
+          <v-icon icon="mdi-account-plus"></v-icon>
+          <span>Добавить пользователя</span>
+        </div>
+
+        <span>Зарегистрировать новое лицо в системе</span>
+
+        <v-text-field label="Введите имя" variant="outlined"></v-text-field>
+
+        <v-btn text="Добавить" @click="addUser" color="#00d492">
+          <template #prepend>
+            <v-icon icon="mdi-account-plus"></v-icon>
+          </template>
+        </v-btn>
+      </v-sheet>
+
+      <v-sheet :elevation="6" rounded style="padding: 24px; height: 100%; width: 100%; display: flex; flex-direction: column; gap: 10px; border: solid #4a5a8bff;">
+        <span>Зарегистрированные пользователи</span>
+
+        <v-data-table
+          :headers="headers"
+          :items="users"
+          :items-per-page="10"
+          class="elevation-1"
+          style="border-radius: 8px;"
+        >
+          <template v-slot:item.actions="{ item }">
+            <v-btn
+              color="error"
+              size="small"
+              @click="deleteUser(item.id)"
+            >
+              Удалить
+            </v-btn>
+          </template>
+        </v-data-table>
+      </v-sheet>
+    </div>
   </div>
 </template>
 
@@ -17,41 +91,40 @@ export default {
   name: 'FaceAuthView',
   data() {
     return {
-      status: 'Готово к аутентификации',
-      statusClass: 'info',
-      result: ''
+      tab: 'users',
+      status: '',
+      headers: [
+        { title: 'ID', key: 'id' },
+        { title: 'Имя', key: 'name' },
+        { title: 'Дата регистрации', key: 'date_registered' },
+        { title: 'Действия', key: 'actions', sortable: false }
+      ],
+      users: [
+        { id: 1, name: 'Иванов Иван', date_registered: '2023-01-15' },
+        { id: 2, name: 'Петров Петр', date_registered: '2023-01-20' },
+      ]
     };
   },
   methods: {
     async authenticateUser() {
       this.status = 'Выполняется аутентификация...';
-      this.statusClass = 'info';
       
       try {
         const response = await fetch('/api/authenticate', { method: 'POST' });
         const data = await response.json();
         
         if (data.status === 'success') {
-          this.status = 'Аутентификация успешна! Предоставляется доступ к сети.';
-          this.statusClass = 'success';
-          
-          // Через 2 секунды перенаправляем пользователя
-          setTimeout(() => {
-            window.location.href = 'http://www.google.com';
-          }, 2000);
+          this.status = 'Аутентификация успешна! Предоставляется доступ.';
         } else {
           this.status = data.message || 'Аутентификация не удалась';
-          this.statusClass = 'error';
         }
       } catch (error) {
         this.status = 'Ошибка соединения';
-        this.statusClass = 'error';
       }
     },
     
     async addUser() {
       this.status = 'Добавление нового пользователя...';
-      this.statusClass = 'info';
       
       try {
         const response = await fetch('/api/add_user', { method: 'POST' });
@@ -59,14 +132,29 @@ export default {
         
         if (data.status === 'success') {
           this.status = data.message;
-          this.statusClass = 'success';
         } else {
           this.status = data.message || 'Не удалось добавить пользователя';
-          this.statusClass = 'error';
         }
       } catch (error) {
         this.status = 'Ошибка соединения';
-        this.statusClass = 'error';
+      }
+    },
+    
+    async deleteUser(userId) {
+      if (confirm('Вы уверены, что хотите удалить этого пользователя?')) {
+        try {
+          const response = await fetch(`/api/delete_user/${userId}`, { method: 'DELETE' });
+          const data = await response.json();
+          
+          if (data.status === 'success') {
+            // Обновляем список пользователей
+            this.users = this.users.filter(user => user.id !== userId);
+          } else {
+            alert(data.message || 'Не удалось удалить пользователя');
+          }
+        } catch (error) {
+          alert('Ошибка соединения');
+        }
       }
     }
   }
@@ -74,68 +162,34 @@ export default {
 </script>
 
 <style scoped>
-.container {
-  max-width: 500px;
-  margin: 0 auto;
-  background: white;
-  padding: 30px;
-  border-radius: 10px;
-  box-shadow: 0 0 10px rgba(0,0,0,0.1);
-  text-align: center;
-  font-family: Arial, sans-serif;
-  margin-top: 50px;
+.v-data-table {
+  box-shadow: 0 2px 6px rgba(0, 0, 0, 0.1);
+  border: 1px solid #e0e0e0;
 }
 
-button {
-  background-color: #4CAF50;
-  color: white;
-  padding: 15px 32px;
-  text-align: center;
-  text-decoration: none;
-  display: inline-block;
-  font-size: 16px;
-  margin: 4px 2px;
-  cursor: pointer;
-  border: none;
-  border-radius: 4px;
-  transition: background-color 0.3s;
+.v-data-table-header th {
+  background-color: #f5f5f5;
+  font-weight: bold;
+ color: #333;
 }
 
-button:hover {
-  background-color: #45a049;
+.v-data-table-body tr:nth-child(even) {
+  background-color: #fafafa;
 }
 
-.auth-button {
-  background-color: #4CAF50;
+.v-data-table-body tr:hover {
+  background-color: #f0f0f0;
 }
 
-.add-user-button {
-  background-color: #2196F3;
-  margin-left: 10px;
+.v-btn {
+  text-transform: none;
 }
 
-.add-user-button:hover {
-  background-color: #0b7dda;
+.v-tab {
+  font-weight: 500;
 }
 
-.status {
-  margin: 20px 0;
-  padding: 10px;
-  border-radius: 4px;
-}
-
-.success { 
-  background-color: #d4edda; 
-  color: #155724; 
-}
-
-.error { 
-  background-color: #f8d7da; 
-  color: #721c24; 
-}
-
-.info { 
-  background-color: #d1ecf1; 
-  color: #0c5460; 
+.v-sheet {
+  padding: 16px;
 }
 </style>
