@@ -52,9 +52,9 @@
 
         <span>Зарегистрировать новое лицо в системе</span>
 
-        <v-text-field label="Введите имя" variant="outlined"></v-text-field>
+        <v-text-field label="Введите имя" variant="outlined" v-model="newUserName"></v-text-field>
 
-        <v-btn text="Добавить" @click="addUser" color="#00d492">
+        <v-btn text="Добавить" @click="addUser(newUserName)" color="#00d492">
           <template #prepend>
             <v-icon icon="mdi-account-plus"></v-icon>
           </template>
@@ -99,13 +99,28 @@ export default {
         { title: 'Дата регистрации', key: 'date_registered' },
         { title: 'Действия', key: 'actions', sortable: false }
       ],
-      users: [
-        { id: 1, name: 'Иванов Иван', date_registered: '2023-01-15' },
-        { id: 2, name: 'Петров Петр', date_registered: '2023-01-20' },
-      ]
+      users: [],
+      newUserName: ''
     };
   },
+  async mounted() {
+    await this.loadUsers();
+  },
   methods: {
+    async loadUsers() {
+      try {
+        const response = await fetch('/api/get_users');
+        if (!response.ok) {
+          throw new Error(`HTTP error! status: ${response.status}`);
+        }
+        const data = await response.json();
+        this.users = data;
+      } catch (error) {
+        console.error('Ошибка загрузки пользователей:', error);
+        this.status = 'Ошибка загрузки пользователей';
+      }
+    },
+    
     async authenticateUser() {
       this.status = 'Выполняется аутентификация...';
       
@@ -123,15 +138,23 @@ export default {
       }
     },
     
-    async addUser() {
+    async addUser(name) {
       this.status = 'Добавление нового пользователя...';
-      
+
       try {
-        const response = await fetch('/api/add_user', { method: 'POST' });
+        const response = await fetch(`/api/add_user?name=${encodeURIComponent(name)}`, {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json'
+          }
+        });
+
         const data = await response.json();
-        
+
         if (data.status === 'success') {
           this.status = data.message;
+          // Обновляем список пользователей
+          this.loadUsers();
         } else {
           this.status = data.message || 'Не удалось добавить пользователя';
         }
@@ -139,6 +162,7 @@ export default {
         this.status = 'Ошибка соединения';
       }
     },
+
     
     async deleteUser(userId) {
       if (confirm('Вы уверены, что хотите удалить этого пользователя?')) {

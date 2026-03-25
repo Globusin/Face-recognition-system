@@ -7,7 +7,7 @@ from pathlib import Path
 sys.path.append(str(Path(__file__).parent.parent))
 
 from utils.video_capture import capture_image
-from utils.db_connect import add_user_embedding, find_similar_embeddings
+from utils.db_connect import add_user_embedding, find_similar_embeddings, save_user_with_embedding, get_all_users
 from utils.config_loader import load_config
 from utils.logger import log_error, log_warning
 
@@ -39,6 +39,12 @@ def create_embeddings_from_camera():
 
 def save_embedding(embedding):
     return add_user_embedding(embedding)
+
+def add_new_user_with_embedding(username, embedding_id):
+    return save_user_with_embedding(username, embedding_id)
+
+def get_users():
+    return get_all_users()
 
 def check_for_similar_embeddings_in_db(embedding):
     results = find_similar_embeddings(embedding)
