@@ -15,17 +15,4 @@ export default createVuetify({
       mdi
     },
   },
-  theme: {
-    themes: {
-      light: {
-        colors: {
-          primary: '#00d492',
-          secondary: '#071e58ff',
-          background: '#0f172b',
-          surface: '#263969ff',
-          'blue-grey-darken-4': '#060a16'
-        }
-      }
-    }
-  }
 })

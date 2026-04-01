@@ -191,3 +191,11 @@ dist
 .pnp.*
 
 # End of https://www.gitignore.io/api/vue,python,node,macos,linux,windows
+
+# Ignore images and data directories
+images/
+data/
+
+# Ignore package.json and _metadata.json if they contain sensitive information
+package.json
+_metadata.json
