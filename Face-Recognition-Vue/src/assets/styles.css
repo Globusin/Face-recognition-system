@@ -1,0 +1,11 @@
+@import url('https://fonts.googleapis.com/css2?family=Neucha&display=swap');
+
+*,
+*::before,
+*::after {
+  font-family: 'Neucha', cursive !important;
+}
+
+body {
+  font-family: 'Neucha', cursive !important;
+}

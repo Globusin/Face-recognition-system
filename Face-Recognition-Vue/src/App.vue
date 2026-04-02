@@ -4,29 +4,36 @@ import { RouterView } from 'vue-router'
 
 <template>
   <v-app>
-    <v-toolbar floating :border="true">
-      <div style="display: flex; gap: 1vw; padding-left: 5vw; align-items: center;">
-        <v-icon size="35" icon="mdi-door-open"></v-icon>
-        <v-img src="@/assets/house_grandpa.jpeg"></v-img>
-
-        <div style="display: flex; flex-direction: column;">
-          <v-toolbar-title>Домовой</v-toolbar-title>
-          <span class="text-caption" style="font-size: 0.8rem; color: grey;">Система доступа</span>
-        </div>
+    <v-toolbar floating :elevation="3">
+      <div class="toolbar-content">
+        <span class="app-title">Домовой</span>
       </div>
     </v-toolbar>
 
     <v-main>
       <div class="main-content-container">
-        <RouterView/>
+        <RouterView />
       </div>
     </v-main>
   </v-app>
 </template>
 
 <style scoped>
+.toolbar-content {
+  width: 100%;
+  display: flex;
+  justify-content: center;
+  padding: 30px;
+}
+
+.app-title {
+  font-size: 50px !important;
+  font-weight: 700;
+  letter-spacing: -0.5px;
+}
+
 .main-content-container {
   padding: 5vh;
-  height: 100%;
+  min-height: 100%;
 }
 </style>
