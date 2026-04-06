@@ -1,91 +1,127 @@
 <template>
-    <div class="container">
+    <div class="d-flex flex-column ga-6">
         <!-- TABS -->
-        <v-tabs
-            v-model="tab"
-            inset
-        >
-            <v-tab value="auth">
-                <div class="tab-content">
-                    <v-icon icon="mdi-face-recognition"></v-icon>
-                    <span>Аутентификация</span>
-                </div>
-            </v-tab>
-            <v-tab value="users">
-                <div class="tab-content">
-                    <v-icon icon="mdi-account-group"></v-icon>
-                    <span>Пользователи</span>
-                </div>
-            </v-tab>
-        </v-tabs>
-    
-        <!-- AUTH -->
-        <div v-if="tab == 'auth'" class="flex-gap-16">
-            <v-sheet class="panel" rounded>
-                <div class="panel-header">
-                    <v-icon icon="mdi-face-recognition" class="icon"></v-icon>
-                    <span class="panel-title">Распознавание лица</span>
-                </div>
-
-                <p class="panel-text">Нажмите кнопку для аутентификации через распознавание лица</p>
-
-                <v-btn text="Аутентификация" @click="authenticateUser" class="btn">Аутентификация</v-btn>
-            </v-sheet>
-
-            <v-sheet class="panel" rounded>
-                <div class="status-block">
-                    <span class="status-label">Статус</span>
-                    <span class="status-value">{{ status }}</span>
-                </div>
-            </v-sheet>
+        <div class="d-flex justify-center">
+            <v-tabs
+                v-model="tab"
+                inset
+            >
+                <v-tab value="auth">
+                    <div class="tab-content">
+                        <v-icon icon="mdi-face-recognition"></v-icon>
+                        <span>Аутентификация</span>
+                    </div>
+                </v-tab>
+                <v-tab value="users">
+                    <div class="tab-content">
+                        <v-icon icon="mdi-account-group"></v-icon>
+                        <span>Пользователи</span>
+                    </div>
+                </v-tab>
+            </v-tabs>
         </div>
-    
-        <!-- USERS -->
-        <div v-if="tab == 'users'" class="flex-gap-16">
-            <v-sheet class="panel panel-small" rounded>
-                <div class="panel-header">
-                    <v-icon icon="mdi-account-plus" class="icon"></v-icon>
-                    <span class="panel-title">Добавить пользователя</span>
+
+        <div class="d-flex justify-center w-100 h-100">
+
+            <!-- AUTH -->
+            <div v-if="tab == 'auth'" class="d-flex flex-column justify-center w-75 h-100 ga-4 border-md rounded pa-6">
+                <div class="w-100 d-flex justify-center">
+                    <span style="font-size: 40px; color: #d84315">Взгляд</span>
                 </div>
 
-                <p class="panel-text">Зарегистрировать новое лицо в системе</p>
+                <v-divider :thickness="4" variant="dashed"/>
 
-                <v-text-field 
-                    label="Введите имя" 
-                    variant="outlined" 
-                    v-model="newUserName"
-                    class="input"
-                ></v-text-field>
+                <div class="d-flex flex-row ga-4">
+                    <v-sheet class="panel w-75 h-100" rounded>
+                        <v-img
+                            :width="500"
+                            aspect-ratio="16/9"
+                            cover
+                            src="/tmp_image.jpg"
+                            rounded="xl"
+                        ></v-img>
+                    </v-sheet>
 
-                <v-btn text="Добавить" @click="addUser(newUserName)" class="btn w-100">
-                    <template #prepend>
-                        <v-icon icon="mdi-account-plus"></v-icon>
-                    </template>
-                    Добавить
-                </v-btn>
-            </v-sheet>
-
-            <v-sheet class="panel" rounded>
-                <span class="panel-title-small">Зарегистрированные пользователи</span>
-
-                <v-data-table
-                    :headers="headers"
-                    :items="users"
-                    :items-per-page="10"
-                    class="custom-table"
-                >
-                    <template v-slot:item.actions="{ item }">
-                        <v-btn
-                            color="error"
-                            size="small"
-                            @click="deleteUser(item.id)"
-                            class="delete-btn"
+                    <div class="d-flex flex-column ga-8">
+                        <v-card
+                            :variant="variant"
+                            :subtitle="status"
+                            title="Статус"
                         >
-                            Удалить
+                        </v-card>
+
+                        <v-card
+                            :variant="variant"
+                            :subtitle="lastUser"
+                            title="Последний пользователь"
+                        >
+                        </v-card>
+
+                        <v-card
+                            :variant="variant"
+                            :subtitle="recognitionResult"
+                            title="Результат"
+                        >
+                        </v-card>
+
+                        <v-btn
+                            text="Аутентификация"
+                            @click="authenticateUser"
+                        >
+                            Аутентификация
                         </v-btn>
-                    </template>
-                </v-data-table>
-            </v-sheet>
+                    </div>
+                </div>
+            </div>
+        
+            <!-- USERS -->
+            <div v-if="tab == 'users'">
+                <v-sheet class="panel panel-small" rounded>
+                    <div class="panel-header">
+                        <v-icon icon="mdi-account-plus" class="icon"></v-icon>
+                        <span class="panel-title">Добавить пользователя</span>
+                    </div>
+
+                    <p class="panel-text">Зарегистрировать новое лицо в системе</p>
+
+                    <v-text-field 
+                        label="Введите имя" 
+                        variant="outlined" 
+                        v-model="newUserName"
+                        class="input"
+                    ></v-text-field>
+
+                    <v-btn text="Добавить" @click="addUser(newUserName)" class="w-100">
+                        <template #prepend>
+                            <v-icon icon="mdi-account-plus"></v-icon>
+                        </template>
+                        Добавить
+                    </v-btn>
+                </v-sheet>
+
+                <v-sheet class="panel" rounded>
+                    <span class="panel-title-small">Зарегистрированные пользователи</span>
+
+                    <v-data-table
+                        :headers="headers"
+                        :items="users"
+                        :items-per-page="10"
+                        class="custom-table"
+                    >
+                        <template v-slot:item.actions="{ item }">
+                            <v-btn
+                                color="error"
+                                size="small"
+                                @click="deleteUser(item.id)"
+                                class="delete-btn"
+                            >
+                                Удалить
+                            </v-btn>
+                        </template>
+                    </v-data-table>
+                </v-sheet>
+            </div>
+        
         </div>
     </div>
 </template>
@@ -95,7 +131,7 @@ export default {
     name: 'FaceAuthView',
     data() {
         return {
-            tab: 'users',
+            tab: 'auth',
             status: '',
             headers: [
                 { title: 'ID', key: 'id' },
@@ -190,23 +226,12 @@ export default {
 </script>
 
 <style scoped>
-.container {
-    display: flex;
-    flex-direction: column;
-    gap: 2vh;
-}
-
 .tab-content {
     display: flex;
     gap: 8px;
     align-items: center;
     font-weight: 600;
     color: #361904;
-}
-
-.flex-gap-16 {
-    display: flex;
-    gap: 16px;
 }
 
 .panel {
@@ -255,26 +280,6 @@ export default {
     font-size: 14px;
     line-height: 1.5;
     margin-bottom: 16px;
-}
-
-.btn {
-    background-color: #8B4513 !important;
-    font-weight: 600;
-    text-transform: none;
-    border: 2px solid #654321;
-    box-shadow: 2px 2px 0px rgba(101, 67, 33, 0.5);
-    transition: all 0.2s ease;
-}
-
-.btn:hover {
-    background-color: #A0522D !important;
-    box-shadow: 3px 3px 0px rgba(101, 67, 33, 0.6);
-    transform: translate(-1px, -1px);
-}
-
-.btn:active {
-    transform: translate(1px, 1px);
-    box-shadow: 1px 1px 0px rgba(101, 67, 33, 0.4);
 }
 
 .w-100 {

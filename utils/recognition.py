@@ -1,6 +1,6 @@
 import face_recognition
 import os
-import logging
+import shutil
 import sys
 from pathlib import Path
 
@@ -30,7 +30,10 @@ def create_embeddings_from_camera():
     # Захватываем изображение с камеры
     camera_image_path = os.path.join('data', 'tmp_image.jpg')
     success = capture_image(camera_image_path)
-    
+
+    destination_path = os.path.join('Face-Recognition-Vue', 'public', 'tmp_image.jpg')
+    shutil.copy(camera_image_path, destination_path)
+
     if not success:
         log_error("Не удалось получить изображение с камеры для создания эмбэддингов")
         return None

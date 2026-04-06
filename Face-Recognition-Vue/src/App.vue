@@ -5,7 +5,7 @@ import { RouterView } from 'vue-router'
 <template>
   <v-app>
     <v-toolbar floating :elevation="3">
-      <div class="toolbar-content">
+      <div class="w-100 d-flex justify-center">
         <span class="app-title">Домовой</span>
       </div>
     </v-toolbar>
@@ -19,17 +19,11 @@ import { RouterView } from 'vue-router'
 </template>
 
 <style scoped>
-.toolbar-content {
-  width: 100%;
-  display: flex;
-  justify-content: center;
-  padding: 30px;
-}
-
 .app-title {
   font-size: 50px !important;
   font-weight: 700;
   letter-spacing: -0.5px;
+  color: #5d4037;
 }
 
 .main-content-container {
