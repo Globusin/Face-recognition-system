@@ -7,7 +7,7 @@ from pathlib import Path
 sys.path.append(str(Path(__file__).parent.parent))
 
 from utils.recognition import create_embeddings_from_camera, save_embedding, add_new_user_with_embedding
-from utils.db_connect import get_all_users
+from utils.db_connect import get_all_users, delete_user_by_id
 
 app = Flask(__name__)
 app.secret_key = os.urandom(24)
@@ -61,7 +61,6 @@ def get_users():
 
 @app.route('/api/delete_user/<int:user_id>', methods=['DELETE'])
 def delete_user(user_id):
-    from utils.db_connect import delete_user_by_id
     try:
         success = delete_user_by_id(user_id)
         if success:

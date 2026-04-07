@@ -238,6 +238,55 @@ def get_user_by_embedding_id(embedding_id: int):
                 'date_registered': result[2].strftime('%Y-%m-%d') if result[2] else None
             }
 
+def delete_user_by_id(user_id: int):
+    """Удаляет пользователя по ID, включая связанные эмбэддинги"""
+    with create_connection() as conn:
+        with conn.cursor() as cur:
+            try:
+                # Сначала получаем все идентификаторы эмбеддингов, связанных с пользователем
+                cur.execute("""
+                    SELECT embedding_id FROM users_to_embeddings
+                    WHERE user_id = %s
+                """, (user_id,))
+                
+                embedding_ids = cur.fetchall()
+                
+                if embedding_ids:
+                    # Удаляем записи из users_to_embeddings
+                    cur.execute("""
+                        DELETE FROM users_to_embeddings
+                        WHERE user_id = %s
+                    """, (user_id,))
+
+                    emb_id_tuple = tuple(id_[0] for id_ in embedding_ids)
+                    
+                    # Удаляем сами эмбэддинги
+                    cur.execute("""
+                        DELETE FROM embeddings
+                        WHERE id = ANY(%s)
+                    """, (list(emb_id_tuple),))
+                
+                # Удаляем пользователя
+                cur.execute("""
+                    DELETE FROM users
+                    WHERE id = %s
+                """, (user_id,))
+                
+                conn.commit()
+                
+                deleted_count = cur.rowcount
+                if deleted_count > 0:
+                    log_info(f"Пользователь с ID {user_id} и связанные данные успешно удалены.")
+                    return True
+                else:
+                    log_debug(f"Пользователь с ID {user_id} не найден.")
+                    return False
+                    
+            except Exception as e:
+                conn.rollback()
+                log_error(f"Ошибка при удалении пользователя с ID {user_id}: {e}")
+                raise
+
 
 if __name__ == "__main__":
     log_debug("Создание таблиц.")

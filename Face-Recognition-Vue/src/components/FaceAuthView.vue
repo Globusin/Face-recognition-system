@@ -37,7 +37,7 @@
                             :width="600"
                             aspect-ratio="16/9"
                             cover
-                            src="/tmp_image.jpg"
+                            :src="imageSrc"
                             rounded="xl"
                         ></v-img>
                     </v-sheet>
@@ -50,10 +50,18 @@
                             >
                                 <v-card-item>
                                     <div>
-                                        <div class="text-label-medium text-uppercase mt-2 mb-3">
+                                        <div
+                                            class="text-label-medium text-uppercase mt-2 mb-3"
+                                            style="color: #5d4037"
+                                        >
                                             Статус
                                         </div>
-                                        <div class="text-title-large mb-1">{{ status }}</div>
+                                        <div
+                                            class="text-title-large mb-1"
+                                            :style="{'color': statusColor}"
+                                        >
+                                            {{ status }}
+                                        </div>
                                     </div>
                                 </v-card-item>
                             </v-card>
@@ -64,10 +72,18 @@
                             >
                                 <v-card-item>
                                     <div>
-                                        <div class="text-label-medium text-uppercase mt-2 mb-3">
+                                        <div
+                                            class="text-label-medium text-uppercase mt-2 mb-3"
+                                            style="color: #5d4037"
+                                        >
                                             Последний пользователь
                                         </div>
-                                        <div class="text-title-large mb-1">{{ lastUser.name }}</div>
+                                        <div
+                                            class="text-title-large mb-1"
+                                            :style="{'color': statusColor}"
+                                        >
+                                            {{ lastUser.name }}
+                                        </div>
                                     </div>
                                 </v-card-item>
                             </v-card>
@@ -78,10 +94,18 @@
                             >
                                 <v-card-item>
                                     <div>
-                                        <div class="text-label-medium text-uppercase mt-2 mb-3">
+                                        <div
+                                            class="text-label-medium text-uppercase mt-2 mb-3"
+                                            style="color: #5d4037"
+                                        >
                                             Близость
                                         </div>
-                                        <div class="text-title-large mb-1">{{ recognitionResult.distance }}</div>
+                                        <div
+                                            class="text-title-large mb-1"
+                                            :style="{'color': statusColor}"
+                                        >
+                                            {{ recognitionResult.distance }}
+                                        </div>
                                     </div>
                                 </v-card-item>
                             </v-card>
@@ -106,7 +130,7 @@
 
                     <v-btn
                         text="Аутентификация"
-                        @click="addUser"
+                        @click="() => dialogVisible = true"
                         variant="elevated"
                         color="#d84315"
                     >
@@ -133,8 +157,40 @@
                     </template>
                 </v-data-table>
             </div>
-        
         </div>
+
+        <v-dialog v-model="dialogVisible" max-width="500">
+            <v-card>
+                <v-card-title class="text-h5" style="color: #d84315">
+                    Регистрация нового пользователя
+                </v-card-title>
+                
+                <v-card-text>
+                    <p class="mb-4">
+                        Для добавления нового пользователя необходимо встать перед камерой.
+                    </p>
+                    
+                    <v-text-field
+                        v-model="newUserName"
+                        label="Введите имя пользователя"
+                        placeholder="Иван Иванов"
+                        variant="outlined"
+                        color="#d84315"
+                        @keyup.enter="addUser"
+                    ></v-text-field>
+                </v-card-text>
+
+                <v-card-actions>
+                    <v-spacer></v-spacer>
+                    <v-btn color="grey-darken-1" variant="text" @click="() => dialogVisible = false">
+                        Отмена
+                    </v-btn>
+                    <v-btn color="#d84315" variant="elevated" @click="addUser">
+                        Подтвердить и добавить
+                    </v-btn>
+                </v-card-actions>
+            </v-card>
+        </v-dialog>
     </div>
 </template>
 
@@ -144,17 +200,25 @@ export default {
     data() {
         return {
             tab: 'auth',
+
             status: 'Неизвестно',
             lastUser: 'Неизвестно',
             recognitionResult: 'Неизвестно',
+
             headers: [
                 { title: 'ID', key: 'id' },
                 { title: 'Имя', key: 'name' },
                 { title: 'Дата регистрации', key: 'date_registered' },
                 { title: 'Действия', key: 'actions', sortable: false }
             ],
+
             users: [],
-            newUserName: ''
+            newUserName: '',
+
+            imageSrc: '/tmp_image.jpg',
+            statusColor: '#5d4037',
+
+            dialogVisible: false
         };
     },
     async mounted() {
@@ -183,23 +247,27 @@ export default {
                 const data = await response.json();
 
                 this.recognitionResult = data
-                this.lastUser = this.users.find(u => u.id == data.user_id)
+                this.lastUser = this.users.find(u => u.id == data.user_id);
                 
                 if (data.status === 'success') {
                     this.status = 'Аутентификация успешна! Предоставляется доступ.';
+                    this.imageSrc = `/tmp_image.jpg?t=${new Date().getTime()}`;
+                    this.statusColor = '#2e7d32'
                 } else {
                     this.status = data.message || 'Аутентификация не удалась';
+                    this.imageSrc = null;
+                    this.statusColor = '#5d4037'
                 }
             } catch (error) {
                 this.status = 'Ошибка соединения';
             }
         },
         
-        async addUser(name) {
+        async addUser() {
             this.status = 'Добавление нового пользователя...';
 
             try {
-                const response = await fetch(`/api/add_user?name=${encodeURIComponent(name)}`, {
+                const response = await fetch(`/api/add_user?name=${encodeURIComponent(this.newUserName)}`, {
                     method: 'POST',
                     headers: {
                         'Content-Type': 'application/json'
@@ -217,6 +285,8 @@ export default {
                 }
             } catch (error) {
                 this.status = 'Ошибка соединения';
+            } finally {
+                this.dialogVisible = false;
             }
         },
 
