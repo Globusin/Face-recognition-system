@@ -67,7 +67,7 @@
                                         <div class="text-label-medium text-uppercase mt-2 mb-3">
                                             Последний пользователь
                                         </div>
-                                        <div class="text-title-large mb-1">{{ lastUser }}</div>
+                                        <div class="text-title-large mb-1">{{ lastUser.name }}</div>
                                     </div>
                                 </v-card-item>
                             </v-card>
@@ -79,9 +79,9 @@
                                 <v-card-item>
                                     <div>
                                         <div class="text-label-medium text-uppercase mt-2 mb-3">
-                                            Результат
+                                            Близость
                                         </div>
-                                        <div class="text-title-large mb-1">{{ recognitionResult }}</div>
+                                        <div class="text-title-large mb-1">{{ recognitionResult.distance }}</div>
                                     </div>
                                 </v-card-item>
                             </v-card>
@@ -106,7 +106,7 @@
 
                     <v-btn
                         text="Аутентификация"
-                        @click="authenticateUser"
+                        @click="addUser"
                         variant="elevated"
                         color="#d84315"
                     >
@@ -144,7 +144,9 @@ export default {
     data() {
         return {
             tab: 'auth',
-            status: '',
+            status: 'Неизвестно',
+            lastUser: 'Неизвестно',
+            recognitionResult: 'Неизвестно',
             headers: [
                 { title: 'ID', key: 'id' },
                 { title: 'Имя', key: 'name' },
@@ -179,6 +181,9 @@ export default {
             try {
                 const response = await fetch('/api/authenticate', { method: 'POST' });
                 const data = await response.json();
+
+                this.recognitionResult = data
+                this.lastUser = this.users.find(u => u.id == data.user_id)
                 
                 if (data.status === 'success') {
                     this.status = 'Аутентификация успешна! Предоставляется доступ.';
@@ -256,76 +261,6 @@ export default {
 
 .panel:hover {
     box-shadow: 6px 6px 0px rgba(139, 69, 19, 0.3);
-}
-
-.panel-small {
-    width: 30%;
-}
-
-.panel-header {
-    display: flex;
-    gap: 8px;
-    align-items: center;
-    margin-bottom: 16px;
-}
-
-.panel-title {
-    font-size: 24px;
-    font-weight: bold;
-    color: #8B4513;
-}
-
-.panel-title-small {
-    font-size: 18px;
-    font-weight: bold;
-    color: #8B4513;
-    display: block;
-    margin-bottom: 12px;
-}
-
-.icon {
-    color: #8B4513;
-}
-
-.panel-text {
-    color: #5a4a3a;
-    font-size: 14px;
-    line-height: 1.5;
-    margin-bottom: 16px;
-}
-
-.w-100 {
-    width: 100%;
-}
-
-.status-block {
-    display: flex;
-    flex-direction: column;
-    gap: 8px;
-}
-
-.status-label {
-    font-size: 14px;
-    color: #8B4513;
-    font-weight: 600;
-}
-
-.status-value {
-    font-size: 16px;
-    color: #5a4a3a;
-}
-
-.input :deep(.v-field) {
-    background-color: #FFFFFF !important;
-    border: 2px solid #8B4513 !important;
-}
-
-.input :deep(.v-field--focused) {
-    border-color: #A0522D !important;
-}
-
-.input :deep(.v-label) {
-    color: #8B4513;
 }
 
 .custom-table {

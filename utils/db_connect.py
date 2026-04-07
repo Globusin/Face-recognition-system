@@ -215,6 +215,30 @@ def get_all_users():
             
             return result
 
+def get_user_by_embedding_id(embedding_id: int):
+    """Получает пользователя по embedding_id"""
+    with create_connection() as conn:
+        with conn.cursor() as cur:
+            cur.execute("""
+                SELECT u.id, u.username, u.created_at
+                FROM users u
+                JOIN users_to_embeddings ute ON u.id = ute.user_id
+                WHERE ute.embedding_id = %s
+            """, (embedding_id,))
+            
+            result = cur.fetchone()
+            
+            if result is None:
+                log_debug(f"Пользователь для embedding_id={embedding_id} не найден.")
+                return None
+            
+            return {
+                'id': result[0],
+                'name': result[1],
+                'date_registered': result[2].strftime('%Y-%m-%d') if result[2] else None
+            }
+
+
 if __name__ == "__main__":
     log_debug("Создание таблиц.")
     

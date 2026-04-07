@@ -7,7 +7,7 @@ from pathlib import Path
 sys.path.append(str(Path(__file__).parent.parent))
 
 from utils.video_capture import capture_image
-from utils.db_connect import add_user_embedding, find_similar_embeddings, save_user_with_embedding, get_all_users
+from utils.db_connect import *
 from utils.config_loader import load_config
 from utils.logger import log_error, log_warning
 
@@ -54,11 +54,13 @@ def check_for_similar_embeddings_in_db(embedding):
     if not results:
         return False, None
     
-    id, distance = results[0]
+    embedding_id, distance = results[0]
     similarity = config.get('similarity', 0.15)
+
+    user = get_user_by_embedding_id(embedding_id)
     
     if distance < similarity:
-        return True, id, distance
+        return True, user.get('id'), distance
     return False, None, None
 
 def recognize_face_from_camera():
