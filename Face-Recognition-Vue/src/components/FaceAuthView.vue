@@ -24,9 +24,9 @@
         <div class="d-flex justify-center w-100 h-100">
 
             <!-- AUTH -->
-            <div v-if="tab == 'auth'" class="d-flex flex-column justify-center w-75 h-100 ga-4 border-md rounded pa-6">
+            <div v-if="tab == 'auth'" class="d-flex flex-column justify-center w-50 h-100 ga-4 border-md rounded pa-6">
                 <div class="w-100 d-flex justify-center">
-                    <span style="font-size: 40px; color: #d84315">Взгляд</span>
+                    <span style="font-size: 40px; color: #d84315">Камера</span>
                 </div>
 
                 <v-divider :thickness="4" variant="dashed"/>
@@ -34,7 +34,7 @@
                 <div class="d-flex flex-row ga-4">
                     <v-sheet class="panel w-75 h-100" rounded>
                         <v-img
-                            :width="500"
+                            :width="600"
                             aspect-ratio="16/9"
                             cover
                             src="/tmp_image.jpg"
@@ -42,31 +42,56 @@
                         ></v-img>
                     </v-sheet>
 
-                    <div class="d-flex flex-column ga-8">
-                        <v-card
-                            :variant="variant"
-                            :subtitle="status"
-                            title="Статус"
-                        >
-                        </v-card>
+                    <div class="d-flex flex-column justify-sm-space-between">
+                        <div class="d-flex flex-column ga-4">
+                            <v-card
+                                variant="outlined"
+                                color="#ffab00"
+                            >
+                                <v-card-item>
+                                    <div>
+                                        <div class="text-label-medium text-uppercase mt-2 mb-3">
+                                            Статус
+                                        </div>
+                                        <div class="text-title-large mb-1">{{ status }}</div>
+                                    </div>
+                                </v-card-item>
+                            </v-card>
 
-                        <v-card
-                            :variant="variant"
-                            :subtitle="lastUser"
-                            title="Последний пользователь"
-                        >
-                        </v-card>
+                            <v-card
+                                variant="outlined"
+                                color="#ffab00"
+                            >
+                                <v-card-item>
+                                    <div>
+                                        <div class="text-label-medium text-uppercase mt-2 mb-3">
+                                            Последний пользователь
+                                        </div>
+                                        <div class="text-title-large mb-1">{{ lastUser }}</div>
+                                    </div>
+                                </v-card-item>
+                            </v-card>
 
-                        <v-card
-                            :variant="variant"
-                            :subtitle="recognitionResult"
-                            title="Результат"
-                        >
-                        </v-card>
+                            <v-card
+                                variant="outlined"
+                                color="#ffab00"
+                            >
+                                <v-card-item>
+                                    <div>
+                                        <div class="text-label-medium text-uppercase mt-2 mb-3">
+                                            Результат
+                                        </div>
+                                        <div class="text-title-large mb-1">{{ recognitionResult }}</div>
+                                    </div>
+                                </v-card-item>
+                            </v-card>
+                        </div>
 
                         <v-btn
                             text="Аутентификация"
                             @click="authenticateUser"
+                            variant="elevated"
+                            color="#d84315"
                         >
                             Аутентификация
                         </v-btn>
@@ -75,51 +100,38 @@
             </div>
         
             <!-- USERS -->
-            <div v-if="tab == 'users'">
-                <v-sheet class="panel panel-small" rounded>
-                    <div class="panel-header">
-                        <v-icon icon="mdi-account-plus" class="icon"></v-icon>
-                        <span class="panel-title">Добавить пользователя</span>
-                    </div>
+            <div v-if="tab == 'users'" class="d-flex flex-column justify-center w-50 h-100 ga-4 border-md rounded pa-6">
+                <div class="w-100 d-flex justify-space-between align-center">
+                    <span style="font-size: 30px; color: #d84315">Пользователи</span>
 
-                    <p class="panel-text">Зарегистрировать новое лицо в системе</p>
-
-                    <v-text-field 
-                        label="Введите имя" 
-                        variant="outlined" 
-                        v-model="newUserName"
-                        class="input"
-                    ></v-text-field>
-
-                    <v-btn text="Добавить" @click="addUser(newUserName)" class="w-100">
-                        <template #prepend>
-                            <v-icon icon="mdi-account-plus"></v-icon>
-                        </template>
+                    <v-btn
+                        text="Аутентификация"
+                        @click="authenticateUser"
+                        variant="elevated"
+                        color="#d84315"
+                    >
                         Добавить
                     </v-btn>
-                </v-sheet>
+                </div>
 
-                <v-sheet class="panel" rounded>
-                    <span class="panel-title-small">Зарегистрированные пользователи</span>
+                <v-divider :thickness="4" variant="dashed"/>
 
-                    <v-data-table
-                        :headers="headers"
-                        :items="users"
-                        :items-per-page="10"
-                        class="custom-table"
-                    >
-                        <template v-slot:item.actions="{ item }">
-                            <v-btn
-                                color="error"
-                                size="small"
-                                @click="deleteUser(item.id)"
-                                class="delete-btn"
-                            >
-                                Удалить
-                            </v-btn>
-                        </template>
-                    </v-data-table>
-                </v-sheet>
+                <v-data-table
+                    :headers="headers"
+                    :items="users"
+                    :items-per-page="10"
+                    class="custom-table"
+                >
+                    <template v-slot:item.actions="{ item }">
+                        <v-btn
+                            color="error"
+                            @click="deleteUser(item.id)"
+                            class="delete-btn"
+                        >
+                            Удалить
+                        </v-btn>
+                    </template>
+                </v-data-table>
             </div>
         
         </div>
