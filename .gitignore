@@ -195,6 +195,7 @@ dist
 # Ignore images and data directories
 images/
 data/
+Face-Recognition-Vue/public/*.jpg
 
 # Ignore package.json and _metadata.json if they contain sensitive information
 package.json
