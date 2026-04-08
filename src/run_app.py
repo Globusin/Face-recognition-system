@@ -31,7 +31,7 @@ def create_hotsopt():
     ssid = hotspot_config.get('ssid', 'DoorApp')
     password = hotspot_config.get('password', '12345678')
     
-    start_hotspot(ssid, password)
+    # start_hotspot(ssid, password)
 
 def main():
     # Регистрируем функцию очистки

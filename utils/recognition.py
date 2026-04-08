@@ -1,13 +1,13 @@
 import face_recognition
 import os
-import logging
+import shutil
 import sys
 from pathlib import Path
 
 sys.path.append(str(Path(__file__).parent.parent))
 
 from utils.video_capture import capture_image
-from utils.db_connect import add_user_embedding, find_similar_embeddings
+from utils.db_connect import *
 from utils.config_loader import load_config
 from utils.logger import log_error, log_warning
 
@@ -30,7 +30,10 @@ def create_embeddings_from_camera():
     # Захватываем изображение с камеры
     camera_image_path = os.path.join('data', 'tmp_image.jpg')
     success = capture_image(camera_image_path)
-    
+
+    destination_path = os.path.join('Face-Recognition-Vue', 'public', 'tmp_image.jpg')
+    shutil.copy(camera_image_path, destination_path)
+
     if not success:
         log_error("Не удалось получить изображение с камеры для создания эмбэддингов")
         return None
@@ -40,16 +43,24 @@ def create_embeddings_from_camera():
 def save_embedding(embedding):
     return add_user_embedding(embedding)
 
+def add_new_user_with_embedding(username, embedding_id):
+    return save_user_with_embedding(username, embedding_id)
+
+def get_users():
+    return get_all_users()
+
 def check_for_similar_embeddings_in_db(embedding):
     results = find_similar_embeddings(embedding)
     if not results:
         return False, None
     
-    id, distance = results[0]
+    embedding_id, distance = results[0]
     similarity = config.get('similarity', 0.15)
+
+    user = get_user_by_embedding_id(embedding_id)
     
     if distance < similarity:
-        return True, id, distance
+        return True, user.get('id'), distance
     return False, None, None
 
 def recognize_face_from_camera():
