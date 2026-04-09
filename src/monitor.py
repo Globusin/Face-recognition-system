@@ -1,19 +1,9 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-"""
-monitor.py - Непрерывный мониторинг для системы распознавания лиц
-
-Функционал:
-- Получение изображения с камеры
-- Распознавание лица
-- Открытие замка при успешной аутентификации (замок замокан)
-"""
-
 import sys
 import time
 from pathlib import Path
 
-# Добавляем корневую директорию в путь
 sys.path.append(str(Path(__file__).parent.parent))
 
 from utils.recognition import recognize_face_from_camera
@@ -30,20 +20,15 @@ def run_monitoring():
     # Загружаем конфигурацию
     config = load_config()
     
-    # Инициализируем контроллер замка
     lock_controller = initialize_lock_controller(config)
     
-    # Получаем параметры из конфигурации
     detection_interval = config.get('detection_interval', 2)
     door_open_time = config.get('door_open_time', 5)
     
-    log_info("=" * 50)
     log_info("Запуск системы непрерывного мониторинга")
     log_info(f"Интервал проверки: {detection_interval} сек.")
     log_info(f"Время открытия двери: {door_open_time} сек.")
-    log_info("=" * 50)
     
-    # Флаг состояния замка (чтобы не открывать повторно)
     is_door_open = False
     last_success_time = 0
     
@@ -63,14 +48,12 @@ def run_monitoring():
                 time.sleep(0.5)
                 continue
             
-            # Попытка распознавания лица
             log_debug("Выполнение проверки распознавания лица...")
             is_authenticated, user_id, distance = recognize_face_from_camera()
             
             if is_authenticated:
-                log_info(f"✓ Лицо распознано! User ID: {user_id}, Distance: {distance:.4f}")
+                log_info(f"Пользователь распознан! User ID: {user_id}, Distance: {distance:.4f}")
                 
-                # Открываем замок
                 log_info("Открытие замка...")
                 if lock_controller.unlock():
                     log_info("✓ Замок успешно открыт (замок замокан)")
@@ -88,7 +71,6 @@ def run_monitoring():
             time.sleep(detection_interval)
             
     except KeyboardInterrupt:
-        log_info("\nПолучен сигнал прерывания (Ctrl+C)")
         log_info("Остановка мониторинга...")
         
         # Убеждаемся, что замок закрыт при остановке
