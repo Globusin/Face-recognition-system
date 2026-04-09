@@ -1,10 +1,28 @@
+```gitignore
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+
 # Dependencies
+.venv/
+venv/
+env/
+
 node_modules/
 
 # Build artifacts
 dist/
 build/
 *.js.map
+
+# Logs
+*.log
+
+# Temporary files
+*.tmp
+*.swp
 
 # Environment
 .env
