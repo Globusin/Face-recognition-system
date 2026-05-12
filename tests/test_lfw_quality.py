@@ -10,6 +10,7 @@ sys.path.append(str(Path(__file__).parent.parent))
 
 from utils.recognition import get_embeddings_from_image, save_embedding, check_for_similar_embeddings_in_db
 from utils.logger import log_debug
+from utils.db_connect import *
 
 
 def test_recognition(images_path):
@@ -51,8 +52,13 @@ def test_recognition(images_path):
                 continue
             
             if expected_user_id is None:
-                # Сохраняем эмбеддинг в БД и получаем ID пользователя
-                expected_user_id = save_embedding(embeddings[0])
+                embedding_id = add_user_embedding(embeddings[0])
+                # Создаем пользователя и связываем с эмбеддингом
+                save_user_with_embedding(person_name, embedding_id)
+                
+                user = get_user_by_embedding_id(embedding_id)
+                expected_user_id = user['id']
+                
                 person_stats['total'] -= 1
                 continue
 
@@ -66,7 +72,12 @@ def test_recognition(images_path):
                     person_stats['distances'].append(distance)
                 else:
                     person_stats['wrong_person'] += 1
-                    print(f'Ошибка: {person_name} распознан как пользователь c id {user_id}, приавильный id {expected_user_id}, расстояние: {distance:.4f}')
+                    # Получаем имя неверного пользователя
+                    wrong_user = get_user_by_embedding_id(user_id)
+                    wrong_name = wrong_user['name'] if wrong_user else 'Unknown'
+                    
+                    print(f'Ошибка: {person_name} распознан как "{wrong_name}" (id {user_id}), '
+                          f'правильный id {expected_user_id}, расстояние: {distance:.4f}')
             else:
                 person_stats['unknown'] += 1
                 print(f'Пользователь {person_name} не распознан, расстояние: {distance:.4f}')
@@ -109,6 +120,7 @@ def test_recognition(images_path):
         print(f"Средний процент неизвестных лиц: {avg_unknown:.2f}%")
     return total_stats
 
+
 def save_lfw_image(image_array, output_path):
     """
     Специально для изображений из LFW (они в grayscale)
@@ -127,16 +139,17 @@ def save_lfw_image(image_array, output_path):
         print(f"LFW изображение сохранено: {img.shape} -> {output_path}")
         return True
     else:
-        print(f"Ожидался 2D массив, получен {image_array.shape}")
+        print(f"Ожидался массив, получен {image_array.shape}")
         return False
+
 
 def save_batch_lfw_images(lfw, output_dir):
     """
     Сохранение LFW изображений
     """
     images_array = lfw.images
-    labels_array = lfw.target # id человека
-    target_names = lfw.target_names # имена людей, соответсвуют id из lfw.target
+    labels_array = lfw.target  # id человека
+    target_names = lfw.target_names  # имена людей, соответствуют id из lfw.target
 
     os.makedirs(output_dir, exist_ok=True)
     
@@ -154,15 +167,36 @@ def save_batch_lfw_images(lfw, output_dir):
         save_lfw_image(img, filepath)
 
 
+def cleanup_test_data():
+    """Очищает тестовые данные из БД после тестирования"""
+
+    log_debug("Очистка тестовых данных")
+    
+    try:
+        users = get_all_users()
+        
+        for user in users:
+            delete_user_by_id(user['id'])
+            log_debug(f"Удален пользователь: {user['name']} (id: {user['id']})")
+        
+        log_debug("Тестовые данные успешно очищены")
+    except Exception as e:
+        log_debug(f"Ошибка при очистке тестовых данных: {e}")
+
+
 if __name__ == "__main__":
     log_debug("Запуск теста на основе датасета LFW")
     
     try:
+        create_embeddings_tables()
+
         lfw = fetch_lfw_people(min_faces_per_person=100)
         save_batch_lfw_images(lfw, 'images')
 
         test_recognition('images')
-        log_debug("Тесть на основе датасета LFW пройден успешно")
+        cleanup_test_data()
+        
+        log_debug("Тест на основе датасета LFW пройден успешно")
     except Exception as e:
         log_debug(f"Ошибка при выполнении теста на основе датасета LFW: {e}")
         raise
