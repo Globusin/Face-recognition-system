@@ -215,6 +215,10 @@ images/
 data/
 Face-Recognition-Vue/public/*.jpg
 
+# Local project instructions and development journal
+/AGENTS.md
+/DIPLOMA_WORKLOG.md
+
 # Ignore package.json and _metadata.json if they contain sensitive information
 package.json
 _metadata.json
