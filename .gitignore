@@ -217,6 +217,7 @@ Face-Recognition-Vue/public/*.jpg
 
 # Local project instructions and development journal
 /AGENTS.md
+.serena
 /DIPLOMA_WORKLOG.md
 /opencode.json
 

@@ -33,12 +33,12 @@ def create_embeddings_from_camera():
     camera_image_path = os.path.join('data', 'tmp_image.jpg')
     success = capture_image(camera_image_path)
 
-    destination_path = os.path.join('Face-Recognition-Vue', 'public', 'tmp_image.jpg')
-    shutil.copy(camera_image_path, destination_path)
-
     if not success:
         log_error("Не удалось получить изображение с камеры для создания эмбэддингов")
         return None
+
+    destination_path = os.path.join('Face-Recognition-Vue', 'public', 'tmp_image.jpg')
+    shutil.copy(camera_image_path, destination_path)
     
     return get_embeddings_from_image(camera_image_path)
 

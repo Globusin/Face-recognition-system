@@ -1,6 +1,15 @@
 
 camera:
+  auto_detect: true
+  required_count: 2
+  scan_max_index: 10
+
+  # Ручной режим
   index: 0
+  # Фиксированные пути:
+  # sources:
+  #   - "/dev/v4l/by-id/<camera-1-id>"
+  #   - "/dev/v4l/by-id/<camera-2-id>"
   
   # Разрешение камеры (опционально)
   resolution:
