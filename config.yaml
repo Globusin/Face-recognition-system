@@ -48,6 +48,18 @@ bayesian_scoring:
 detection_interval: 2  # Интервал в секундах между попытками распознавания
 door_open_time: 5      # Время в секундах, на которое открывается дверь после успешного распознавания
 
+# Параметры TFT дисплея
+display:
+  enabled: true
+  cs_pin: "D5"         # GPIO5, pin 29
+  dc_pin: "D25"        # GPIO25, pin 22
+  rst_pin: "D24"       # GPIO24, pin 18
+  width: 128
+  height: 160
+  rotation: 0
+  baudrate: 16000000
+  bgr: true            # Порядок цветовых каналов панели (бит BGR в MADCTL)
+
 # Настройки логирования
 logging:
   level: "INFO"  # Уровень логирования: DEBUG, INFO, WARNING, ERROR
