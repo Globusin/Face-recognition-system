@@ -1,4 +1,5 @@
 psycopg[binary]
+Flask
 setuptools<81  # face_recognition_models 0.3.0 использует pkg_resources
 numpy
 face_recognition

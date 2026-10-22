@@ -8,6 +8,7 @@ from pathlib import Path
 sys.path.append(str(Path(__file__).parent.parent))
 
 from utils.recognition import recognize_face_from_camera
+from utils.video_capture import wait_for_face
 from utils.lock_controller import initialize_lock_controller
 from utils.display import initialize_display, DisplayState
 from utils.config_loader import load_config
@@ -55,7 +56,7 @@ def run_monitoring(stop_event=None):
 
     try:
         while not stop_event.is_set():
-            current_time = time.time()
+            current_time = time.monotonic()
 
             # Проверяем, нужно ли закрыть дверь после открытия
             if is_door_open and (current_time - last_success_time) >= door_open_time:
@@ -70,10 +71,13 @@ def run_monitoring(stop_event=None):
                 wait_or_stop(stop_event, 0.5)
                 continue
 
-            log_debug("Выполнение проверки распознавания лица...")
-            safe_display_state(display, DisplayState.CHECKING, "Распознавание\nлица")
-
             try:
+                safe_display_state(display, DisplayState.STANDBY, "Подойдите\nк камере")
+                if not wait_for_face(stop_event):
+                    break
+
+                log_debug("Лицо обнаружено, запускаем распознавание по серии кадров")
+                safe_display_state(display, DisplayState.CHECKING, "Распознавание\nлица")
                 is_authenticated, user_id, distance = recognize_face_from_camera()
             except Exception as e:
                 log_error(f"Ошибка при захвате или распознавании: {e}")
@@ -89,7 +93,7 @@ def run_monitoring(stop_event=None):
                 if lock_controller.unlock():
                     log_info("Замок успешно открыт (программная заглушка)")
                     is_door_open = True
-                    last_success_time = current_time
+                    last_success_time = time.monotonic()
 
                     safe_display_state(
                         display,

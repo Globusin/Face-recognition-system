@@ -1,7 +1,6 @@
 import face_recognition
 import math
 import os
-import shutil
 import sys
 from pathlib import Path
 from collections import Counter, defaultdict
@@ -37,9 +36,6 @@ def create_embeddings_from_camera():
         log_error("Не удалось получить изображение с камеры для создания эмбэддингов")
         return None
 
-    destination_path = os.path.join('Face-Recognition-Vue', 'public', 'tmp_image.jpg')
-    shutil.copy(camera_image_path, destination_path)
-    
     return get_embeddings_from_image(camera_image_path)
 
 def save_embedding(embedding):
@@ -117,11 +113,8 @@ def get_bayesian_scoring_config():
         'minimum_likelihood': minimum_likelihood,
     }
 
-def create_embeddings_series_from_camera(frames_count=None, frame_delay=None):
+def create_embeddings_series_from_camera(frames_count, frame_delay):
     """Собирает эмбэддинги с нескольких кадров камеры."""
-    configured_frames_count, _, configured_frame_delay, _ = get_multi_frame_recognition_config()
-    frames_count = configured_frames_count if frames_count is None else max(1, int(frames_count))
-    frame_delay = configured_frame_delay if frame_delay is None else max(0, float(frame_delay))
     
     embeddings_series = []
     image_paths = [
@@ -129,10 +122,6 @@ def create_embeddings_series_from_camera(frames_count=None, frame_delay=None):
         for frame_index in range(frames_count)
     ]
     captured_paths = capture_images(image_paths, frame_delay=frame_delay)
-    
-    if captured_paths:
-        destination_path = os.path.join('Face-Recognition-Vue', 'public', 'tmp_image.jpg')
-        shutil.copy(captured_paths[-1], destination_path)
     
     for frame_index, image_path in enumerate(captured_paths):
         embeddings = get_embeddings_from_image(image_path)
