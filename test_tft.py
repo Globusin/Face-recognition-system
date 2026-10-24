@@ -1,7 +1,6 @@
 #!/usr/bin/env python3
 
 import time
-import socket
 import subprocess
 from pathlib import Path
 
@@ -19,16 +18,32 @@ from utils.config_loader import load_config
 # Настройки
 # ============================================================
 
-IMAGE_PATH = Path(
-    "/home/pi/Face-recognition-system/assets/boot_image.png"
+PROJECT_DIR = Path(__file__).resolve().parent
+IMAGE_DIR = PROJECT_DIR / "resources" / "display-images"
+
+FACE_IMAGES = {
+    "chill": IMAGE_DIR / "display-face-chill.png",
+    "front": IMAGE_DIR / "display-face-front.png",
+    "left": IMAGE_DIR / "display-face-left.png",
+    "right": IMAGE_DIR / "display-face-right.png",
+    "smile": IMAGE_DIR / "display-face-smile.png",
+}
+
+DEFAULT_FACE = "chill"
+FACE_SEQUENCE = (
+    "chill",
+    "front",
+    "left",
+    "front",
+    "right",
+    "front",
+    "smile",
+    "front",
 )
+FRAME_DELAY = 1
 
 FONT_REGULAR = (
     "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf"
-)
-
-FONT_BOLD = (
-    "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf"
 )
 
 # Nokia-подобный синий
@@ -98,15 +113,16 @@ def load_font(path, size):
 # Работа с изображением
 # ============================================================
 
-def prepare_boot_image(path, width, height):
+def prepare_face_image(path, width, height):
     """
-    Подготавливает картинку для верхней части TFT.
+    Подготавливает изображение лица для TFT
     """
 
-    image = Image.open(path).convert("RGB")
+    with Image.open(path) as source:
+        image = source.convert("RGB")
 
-    # Вписываем в заданную область.
-    image = ImageOps.contain(
+    # Заполняем всю область и не растягиваем картинку
+    image = ImageOps.fit(
         image,
         (width, height),
         method=Image.Resampling.LANCZOS
@@ -151,7 +167,16 @@ def create_display():
 # Рисование
 # ============================================================
 
-def draw_centered(draw, text, y, font, width, color):
+def draw_centered(
+    draw,
+    text,
+    y,
+    font,
+    width,
+    color,
+    stroke_width=0,
+    stroke_fill=None
+):
 
     bbox = draw.textbbox(
         (0, 0),
@@ -167,11 +192,13 @@ def draw_centered(draw, text, y, font, width, color):
         (x, y),
         text,
         font=font,
-        fill=color
+        fill=color,
+        stroke_width=stroke_width,
+        stroke_fill=stroke_fill
     )
 
 
-def show_screen(display, ip_address):
+def create_screen(display, ip_address, face_name=DEFAULT_FACE):
 
     width = display.width
     height = display.height
@@ -188,22 +215,19 @@ def show_screen(display, ip_address):
     # Картинка
     # --------------------------------------------------------
 
-    image_area_height = 120
+    image_path = FACE_IMAGES.get(face_name, FACE_IMAGES[DEFAULT_FACE])
 
-    if IMAGE_PATH.exists():
+    if image_path.exists():
 
-        picture = prepare_boot_image(
-            IMAGE_PATH,
+        picture = prepare_face_image(
+            image_path,
             width,
-            image_area_height
+            height
         )
-
-        x = (width - picture.width) // 2
-        y = (image_area_height - picture.height) // 2
 
         screen.paste(
             picture,
-            (x, y)
+            (0, 0)
         )
 
     else:
@@ -215,29 +239,11 @@ def show_screen(display, ip_address):
         draw_centered(
             draw,
             "Нет изображения",
-            45,
+            height // 2,
             error_font,
             width,
             "red"
         )
-
-    # --------------------------------------------------------
-    # Домовой
-    # --------------------------------------------------------
-
-    title_font = load_font(
-        FONT_BOLD,
-        20
-    )
-
-    draw_centered(
-        draw,
-        "Домовой",
-        105,
-        title_font,
-        width,
-        BLUE
-    )
 
     # --------------------------------------------------------
     # IP
@@ -251,14 +257,28 @@ def show_screen(display, ip_address):
     draw_centered(
         draw,
         f"IP: {ip_address}",
-        137,
+        height - 17,
         ip_font,
         width,
-        BLUE
+        "white",
+        stroke_width=2,
+        stroke_fill=BLUE
     )
 
-    # Отправляем готовый кадр на TFT
-    display.image(screen)
+    return screen
+
+
+def show_animation(display, ip_address):
+    # Готовим кадры один раз перед запуском анимации
+    frames = {
+        face_name: create_screen(display, ip_address, face_name)
+        for face_name in FACE_IMAGES
+    }
+
+    while True:
+        for face_name in FACE_SEQUENCE:
+            display.image(frames[face_name])
+            time.sleep(FRAME_DELAY)
 
 
 # ============================================================
@@ -286,14 +306,12 @@ def main():
         f"IP: {ip_address}"
     )
 
-    show_screen(
-        display,
-        ip_address
-    )
+    print("Анимация запущена. Для остановки нажмите Ctrl+C")
 
-    print(
-        "Экран приветствия отображён."
-    )
+    try:
+        show_animation(display, ip_address)
+    except KeyboardInterrupt:
+        print("\nАнимация остановлена")
 
 
 if __name__ == "__main__":

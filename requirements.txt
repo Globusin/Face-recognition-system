@@ -1,7 +1,10 @@
 psycopg[binary]
+Flask
+setuptools<81  # face_recognition_models 0.3.0 использует pkg_resources
 numpy
 face_recognition
-opencv-python
+face-recognition-models==0.3.0
+opencv-python-headless==4.13.0.92
 pgvector
 pyyaml
 Adafruit-Blinka==9.2.0

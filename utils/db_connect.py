@@ -2,12 +2,50 @@ import psycopg
 import numpy as np
 import sys
 from pathlib import Path
+from contextlib import ExitStack, contextmanager
+from contextvars import ContextVar
 
 sys.path.append(str(Path(__file__).parent.parent))
 
 from utils.config_loader import load_config
 from utils.logger import log_info, log_debug, log_error
+from utils.timing import measure_time
 
+_recognition_session = ContextVar('recognition_db_session', default=None)
+
+
+@contextmanager
+def recognition_db_session():
+    """Ограничивает время жизни соединения одной попыткой распознавания"""
+    if _recognition_session.get() is not None:
+        yield
+        return
+
+    with ExitStack() as resources:
+        session = {'connection': None, 'resources': resources}
+        token = _recognition_session.set(session)
+        try:
+            yield
+        finally:
+            _recognition_session.reset(token)
+
+
+@contextmanager
+def _lookup_connection():
+    session = _recognition_session.get()
+    if session is None:
+        # Отдельный поиск вне серии по-прежнему сам закрывает соединение
+        with create_connection() as connection:
+            yield connection
+        return
+
+    if session['connection'] is None:
+        # Соединение нужно только при первом реальном запросе
+        session['connection'] = session['resources'].enter_context(create_connection())
+    yield session['connection']
+
+
+@measure_time("БД: открытие соединения")
 def create_connection():
     config = load_config()
     db_config = config.get('database', {})
@@ -19,7 +57,7 @@ def create_connection():
     password = db_config.get('password', 'fID3P8zg')
     
     connection_string = f"host={host} port={port} dbname={dbname} user={user} password={password}"
-    return psycopg.connect(connection_string)
+    return psycopg.connect(connection_string, connect_timeout=5)
 
 def initialize_pgvector():
     """Устанавливает расширение pgvector в базе данных"""
@@ -174,10 +212,26 @@ def save_user_with_embedding(username: str, embedding_id: int):
                 raise
 
 
+def find_nearest_user(target_embedding):
+    """Находит ближайший шаблон зарегистрированного пользователя одним запросом"""
+    with _lookup_connection() as conn:
+        with conn.cursor() as cur, measure_time("SQL: ближайший пользователь и расстояние"):
+            cur.execute("""
+                SELECT u.id, e.embedding <=> %s AS distance
+                FROM embeddings e
+                JOIN users_to_embeddings ute ON ute.embedding_id = e.id
+                JOIN users u ON u.id = ute.user_id
+                ORDER BY distance
+                LIMIT 1
+            """, (embedding_to_string(target_embedding),))
+            result = cur.fetchone()
+            return result if result is not None else (None, None)
+
+
 def find_similar_embeddings(target_embedding, limit=1):
     """Находит наиболее похожие эмбэддинги в базе данных"""
     with create_connection() as conn:
-        with conn.cursor() as cur:
+        with conn.cursor() as cur, measure_time("SQL: поиск ближайших эмбеддингов"):
             target_embedding_str = embedding_to_string(target_embedding)
             
             cur.execute("""
@@ -218,7 +272,7 @@ def get_all_users():
 def get_user_by_embedding_id(embedding_id: int):
     """Получает пользователя по embedding_id"""
     with create_connection() as conn:
-        with conn.cursor() as cur:
+        with conn.cursor() as cur, measure_time("SQL: пользователь по эмбеддингу"):
             cur.execute("""
                 SELECT u.id, u.username, u.created_at
                 FROM users u

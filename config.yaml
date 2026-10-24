@@ -1,20 +1,26 @@
 
-camera:
-  auto_detect: true
-  required_count: 2
+cameras:
+  enabled: true
   scan_max_index: 10
+  pair_max_delta_ms: 80  # Максимальная разница захвата между камерами
+  buffer_size: 8
+  max_read_failures: 20
+  lock_file: "/tmp/face_recognition_cameras.lock"
+  diagnostic_report: "data/camera_diagnostics.json"
 
-  # Ручной режим
-  index: 0
-  # Фиксированные пути:
-  # sources:
-  #   - "/dev/v4l/by-id/<camera-1-id>"
-  #   - "/dev/v4l/by-id/<camera-2-id>"
-  
-  # Разрешение камеры (опционально)
-  resolution:
+  primary:
+    device: "/dev/v4l/by-id/usb-Generic_USB_Camera_200901010001-video-index0"
+    format: "MJPG"
     width: 1280
     height: 720
+    fps: 30
+
+  secondary:
+    device: "/dev/v4l/by-id/usb-Suyin_HD_Camera_200910120001-video-index0"
+    format: "MJPG"
+    width: 1280
+    height: 720
+    fps: 30
 
 # Параметры сохранения изображений
 image:
@@ -36,6 +42,10 @@ hotspot:
 
 # Параметры распознавания
 similarity: 0.15  # Порог схожести (чем меньше, тем строже сравнение)
+
+recognition_optimization:
+  roi_enabled: true
+  roi_padding: 0.30  # Отступ с каждой стороны относительно ширины и высоты лица
 
 # Решение о доступе по нескольким кадрам
 multi_frame_recognition:

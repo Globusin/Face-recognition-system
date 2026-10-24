@@ -1,26 +1,87 @@
 import face_recognition
 import math
-import os
-import shutil
+import cv2
 import sys
 from pathlib import Path
 from collections import Counter, defaultdict
 
 sys.path.append(str(Path(__file__).parent.parent))
 
-from utils.video_capture import capture_image, capture_images
+from utils.video_capture import capture_face_frames, detect_faces
 from utils.db_connect import *
 from utils.config_loader import load_config
 from utils.logger import log_debug, log_error, log_info, log_warning
+from utils.timing import measure_time
 
 config = load_config()
 
 def get_embeddings_from_image(image_path: str):
     # Загружаем изображение
-    image = face_recognition.load_image_file(image_path)
-    
+    with measure_time("JPEG: чтение и декодирование"):
+        image = face_recognition.load_image_file(image_path)
+    return _get_embeddings_from_rgb(image)
+
+
+def get_embeddings_from_frame(frame, face_box=None):
+    """Получает эмбеддинги из BGR-кадра камеры без сохранения на диск"""
+    settings = config.get('recognition_optimization', {})
+    if settings.get('roi_enabled', True):
+        try:
+            if face_box is None:
+                faces = detect_faces(frame)
+                if len(faces) != 1:
+                    log_warning("Для ROI требуется ровно одно лицо")
+                    return None
+                face_box = faces[0]
+            with measure_time("Подготовка ROI и преобразование BGR в RGB"):
+                rgb_roi, location = prepare_face_roi(
+                    frame, face_box, settings.get('roi_padding', 0.30),
+                )
+            with measure_time("Формирование эмбеддингов"):
+                embeddings = face_recognition.face_encodings(
+                    rgb_roi, known_face_locations=[location],
+                    num_jitters=1, model='small',
+                )
+            return embeddings if len(embeddings) else None
+        except (ValueError, TypeError, OverflowError, RuntimeError, cv2.error) as error:
+            log_warning(f"Ошибка обработки ROI, кадр отклонён: {error}")
+            return None
+
+    with measure_time("Преобразование BGR в RGB"):
+        image = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+    return _get_embeddings_from_rgb(image)
+
+
+def prepare_face_roi(frame, face_box, padding):
+    """Вырезает лицо с отступами и возвращает RGB ROI и координаты внутри него"""
+    padding = float(padding)
+    if not math.isfinite(padding) or padding < 0:
+        raise ValueError('Отступ ROI должен быть конечным неотрицательным числом')
+    x, y, width, height = (int(value) for value in face_box)
+    image_height, image_width = frame.shape[:2]
+    if (width <= 0 or height <= 0 or x < 0 or y < 0
+            or x + width > image_width or y + height > image_height):
+        raise ValueError('Некорректные координаты лица')
+
+    left = max(0, math.floor(x - width * padding))
+    top = max(0, math.floor(y - height * padding))
+    right = min(image_width, math.ceil(x + width + width * padding))
+    bottom = min(image_height, math.ceil(y + height + height * padding))
+    roi = frame[top:bottom, left:right]
+    if roi.size == 0:
+        raise ValueError('Пустая область ROI')
+    location = (y - top, x + width - left, y + height - top, x - left)
+    return cv2.cvtColor(roi, cv2.COLOR_BGR2RGB), location
+
+
+def _get_embeddings_from_rgb(image):
     # Получаем эмбэддинги лиц на изображении
-    embeddings = face_recognition.face_encodings(image)
+    with measure_time("Детекция лица: dlib"):
+        locations = face_recognition.face_locations(image)
+    with measure_time("Формирование эмбеддингов"):
+        embeddings = face_recognition.face_encodings(
+            image, known_face_locations=locations,
+        )
     
     if len(embeddings) == 0:
         log_warning("На изображении с камеры не найдено лиц")
@@ -29,18 +90,13 @@ def get_embeddings_from_image(image_path: str):
     return embeddings
 
 def create_embeddings_from_camera():
-    # Захватываем изображение с камеры
-    camera_image_path = os.path.join('data', 'tmp_image.jpg')
-    success = capture_image(camera_image_path)
-
-    if not success:
+    frames = capture_face_frames(1, frame_delay=0)
+    if not frames:
         log_error("Не удалось получить изображение с камеры для создания эмбэддингов")
         return None
 
-    destination_path = os.path.join('Face-Recognition-Vue', 'public', 'tmp_image.jpg')
-    shutil.copy(camera_image_path, destination_path)
-    
-    return get_embeddings_from_image(camera_image_path)
+    image, face_box = frames[0]
+    return get_embeddings_from_frame(image, face_box)
 
 def save_embedding(embedding):
     return add_user_embedding(embedding)
@@ -52,7 +108,7 @@ def get_users():
     return get_all_users()
 
 def check_for_similar_embeddings_in_db(embedding):
-    user_id, distance = find_nearest_user_for_embedding(embedding)
+    user_id, distance = find_nearest_user(embedding)
     similarity = config.get('similarity', 0.15)
 
     if user_id is None:
@@ -61,20 +117,6 @@ def check_for_similar_embeddings_in_db(embedding):
     if distance < similarity:
         return True, user_id, distance
     return False, None, None
-
-def find_nearest_user_for_embedding(embedding):
-    results = find_similar_embeddings(embedding)
-    if not results:
-        return None, None
-    
-    embedding_id, distance = results[0]
-    user = get_user_by_embedding_id(embedding_id)
-    
-    if user is None:
-        log_warning(f"Для embedding_id={embedding_id} не найден пользователь")
-        return None, None
-    
-    return user.get('id'), distance
 
 def get_multi_frame_recognition_config():
     recognition_config = config.get('multi_frame_recognition', {})
@@ -117,25 +159,14 @@ def get_bayesian_scoring_config():
         'minimum_likelihood': minimum_likelihood,
     }
 
-def create_embeddings_series_from_camera(frames_count=None, frame_delay=None):
+def create_embeddings_series_from_camera(frames_count, frame_delay):
     """Собирает эмбэддинги с нескольких кадров камеры."""
-    configured_frames_count, _, configured_frame_delay, _ = get_multi_frame_recognition_config()
-    frames_count = configured_frames_count if frames_count is None else max(1, int(frames_count))
-    frame_delay = configured_frame_delay if frame_delay is None else max(0, float(frame_delay))
     
     embeddings_series = []
-    image_paths = [
-        os.path.join('data', f'tmp_image_{frame_index + 1}.jpg')
-        for frame_index in range(frames_count)
-    ]
-    captured_paths = capture_images(image_paths, frame_delay=frame_delay)
+    frames = capture_face_frames(frames_count, frame_delay=frame_delay)
     
-    if captured_paths:
-        destination_path = os.path.join('Face-Recognition-Vue', 'public', 'tmp_image.jpg')
-        shutil.copy(captured_paths[-1], destination_path)
-    
-    for frame_index, image_path in enumerate(captured_paths):
-        embeddings = get_embeddings_from_image(image_path)
+    for frame_index, (frame, face_box) in enumerate(frames):
+        embeddings = get_embeddings_from_frame(frame, face_box)
         
         if embeddings is None or len(embeddings) == 0:
             log_debug(f"Кадр {frame_index + 1}/{frames_count}: эмбэддинг не получен")
@@ -197,6 +228,7 @@ def calculate_bayesian_user_scores(frame_matches, candidate_ids=None):
     best_user_id = max(scores, key=scores.get)
     return best_user_id, scores[best_user_id], scores
 
+@recognition_db_session()
 def recognize_face_from_embeddings_series(embeddings_series):
     """Принимает решение по нескольким кадрам вместо одного."""
     if not embeddings_series:
@@ -210,7 +242,7 @@ def recognize_face_from_embeddings_series(embeddings_series):
     frame_matches = []
     
     for embedding in embeddings_series:
-        nearest_user_id, nearest_distance = find_nearest_user_for_embedding(embedding)
+        nearest_user_id, nearest_distance = find_nearest_user(embedding)
         frame_matches.append((nearest_user_id, nearest_distance))
         
         is_known = (
@@ -281,6 +313,7 @@ def recognize_face_from_embeddings_series(embeddings_series):
     
     return True, user_id, average_distance
 
+@measure_time("Полное распознавание с камеры", summary=True)
 def recognize_face_from_camera():
     """Распознает лицо с камеры и проверяет его наличие в базе данных"""
     frames_count, _, frame_delay, _ = get_multi_frame_recognition_config()

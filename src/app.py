@@ -1,16 +1,59 @@
 # app.py - Основное приложение
-from flask import Flask, jsonify, request
+from flask import Flask, Response, jsonify, request
 import os
 import sys
 from pathlib import Path
+
+import cv2
 
 sys.path.append(str(Path(__file__).parent.parent))
 
 from utils.recognition import create_embeddings_from_camera, save_embedding, add_new_user_with_embedding
 from utils.db_connect import get_all_users, delete_user_by_id
+from utils.camera_manager import CameraError, get_camera_manager, get_public_camera_status
 
 app = Flask(__name__)
 app.secret_key = os.urandom(24)
+
+
+@app.route('/api/cameras/status', methods=['GET'])
+def camera_status():
+    """Возвращает безопасную телеметрию камер без кадров и device paths"""
+    return jsonify(get_public_camera_status())
+
+
+@app.route('/api/cameras/<role>/frame', methods=['GET'])
+def camera_frame(role):
+    """Возвращает свежий уменьшенный кадр камеры"""
+    if role not in ('primary', 'secondary'):
+        return jsonify({'status': 'error', 'message': 'Неизвестная камера'}), 404
+
+    try:
+        frame = get_camera_manager().get_latest_frame(role, timeout=1.0)
+    except CameraError as error:
+        return jsonify({'status': 'error', 'message': str(error)}), 503
+
+    if frame is None:
+        return jsonify({'status': 'error', 'message': 'Кадр не получен'}), 503
+
+    image = frame.image
+    max_width = 640
+    if image.shape[1] > max_width:
+        scale = max_width / image.shape[1]
+        size = (max_width, round(image.shape[0] * scale))
+        image = cv2.resize(image, size, interpolation=cv2.INTER_AREA)
+
+    encoded, jpeg = cv2.imencode(
+        '.jpg',
+        image,
+        [cv2.IMWRITE_JPEG_QUALITY, 70],
+    )
+    if not encoded:
+        return jsonify({'status': 'error', 'message': 'Не удалось подготовить кадр'}), 500
+
+    response = Response(jpeg.tobytes(), mimetype='image/jpeg')
+    response.headers['Cache-Control'] = 'no-store'
+    return response
 
 @app.route('/api/authenticate', methods=['POST'])
 def authenticate():
@@ -20,7 +63,7 @@ def authenticate():
     is_authenticated, user_id, distance = recognize_face_from_camera()
     
     if is_authenticated:
-        # Лицо распознано, предоставляем доступ
+        # API подтверждает личность, но не управляет физическим замком
         return jsonify({
             'status': 'success', 
             'message': 'Аутентификация прошла успешно',
