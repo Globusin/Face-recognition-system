@@ -169,10 +169,10 @@ class CameraReader:
         consecutive_failures = 0
 
         while not self.stop_event.is_set():
-            read_started_ns = time.monotonic_ns()
+            read_started = time.perf_counter()
             success, image = self.capture.read()
+            read_time_ms = (time.perf_counter() - read_started) * 1000
             timestamp_ns = time.monotonic_ns()
-            read_time_ms = (timestamp_ns - read_started_ns) / 1_000_000
 
             if not success or image is None:
                 self.read_failures += 1

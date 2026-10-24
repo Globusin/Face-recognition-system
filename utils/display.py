@@ -26,6 +26,13 @@ PROJECT_DIR = Path(__file__).resolve().parent.parent
 DISPLAY_IMAGE_DIR = PROJECT_DIR / "resources" / "display-images"
 
 STATE_IMAGES = {
+    DisplayState.CHECKING: (
+        DISPLAY_IMAGE_DIR / "display-face-suspiciously.png",
+    ),
+    DisplayState.STANDBY: (
+        DISPLAY_IMAGE_DIR / "display-face-left.png",
+        DISPLAY_IMAGE_DIR / "display-face-right.png",
+    ),
     DisplayState.ERROR: (
         DISPLAY_IMAGE_DIR / "display-face-error.png",
     ),
@@ -39,6 +46,8 @@ STATE_IMAGES = {
 }
 
 STATE_CAPTIONS = {
+    DisplayState.CHECKING: "ПРОВЕРКА\nЛИЦА",
+    DisplayState.STANDBY: "ПОИСК\nЛИЦА",
     DisplayState.ERROR: "ОШИБКА\nСИСТЕМЫ",
     DisplayState.ACCESS_GRANTED: "ДОБРО\nПОЖАЛОВАТЬ",
     DisplayState.ACCESS_DENIED: "ДОСТУП\nЗАПРЕЩЁН",
@@ -167,6 +176,7 @@ class TFTDisplay(Display):
         self._small_font = self._load_caption_font(small_font_size)
         self._caption_font = self._load_caption_font(small_font_size)
         self._image_frames = self._load_image_frames()
+        self._standby_frame = 0
 
     @staticmethod
     def _load_caption_font(size):
@@ -298,7 +308,10 @@ class TFTDisplay(Display):
         if not frames:
             return False
 
-        if state == DisplayState.ACCESS_DENIED:
+        if state == DisplayState.STANDBY:
+            self._driver.image(frames[self._standby_frame % len(frames)])
+            self._standby_frame += 1
+        elif state == DisplayState.ACCESS_DENIED:
             for _ in range(DENIED_ANIMATION_REPEATS):
                 for frame in frames:
                     self._driver.image(frame)

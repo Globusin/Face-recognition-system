@@ -73,7 +73,10 @@ def run_monitoring(stop_event=None):
 
             try:
                 safe_display_state(display, DisplayState.STANDBY, "Подойдите\nк камере")
-                if not wait_for_face(stop_event):
+                if not wait_for_face(
+                    stop_event,
+                    on_wait=lambda: safe_display_state(display, DisplayState.STANDBY),
+                ):
                     break
 
                 log_debug("Лицо обнаружено, запускаем распознавание по серии кадров")
