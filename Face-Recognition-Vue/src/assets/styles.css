@@ -9,3 +9,8 @@
 body {
   font-family: 'Neucha', cursive !important;
 }
+
+/* Значкам собственный шрифт */
+.mdi::before {
+  font-family: 'Material Design Icons' !important;
+}

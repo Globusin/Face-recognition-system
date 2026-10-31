@@ -37,6 +37,12 @@ if ! node -e '
     exit 1
 fi
 
+# Запрашиваем пароль до запуска фоновых процессов
+if ! sudo -v; then
+    echo "Не удалось получить права для запуска backend"
+    exit 1
+fi
+
 # Запускаем PostgreSQL, если он ещё не работает
 if ! systemctl is-active --quiet postgresql; then
     echo "Запуск PostgreSQL"
@@ -52,7 +58,7 @@ if ! "$VENV_PYTHON" utils/db_connect.py; then
     exit 1
 fi
 
-sudo "$VENV_PYTHON" src/run_app.py &
+sudo -n "$VENV_PYTHON" src/run_app.py &
 APP_PID=$!
 
 # Запускаем Vue от обычного пользователя

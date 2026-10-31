@@ -47,7 +47,7 @@ def _has_face(frame, cascade):
     return bool(detect_faces(frame, cascade))
 
 
-def wait_for_face(stop_event, check_interval=0.5, on_wait=None):
+def wait_for_face(stop_event, check_interval=0.5, on_wait=None, cancel_event=None):
     """Проверяет по одному свежему кадру до появления лица или остановки"""
     cascade = _load_face_cascade()
     if cascade is None:
@@ -57,6 +57,8 @@ def wait_for_face(stop_event, check_interval=0.5, on_wait=None):
     last_sequence = manager.get_last_sequence('primary')
 
     while not stop_event.is_set():
+        if cancel_event is not None and cancel_event.is_set():
+            return False
         frame = manager.get_frame(
             role='primary', after_sequence=last_sequence, timeout=1.0,
         )
@@ -70,7 +72,7 @@ def wait_for_face(stop_event, check_interval=0.5, on_wait=None):
         last_sequence = frame.sequence
 
         if _has_face(frame.image, cascade):
-            return True
+            return cancel_event is None or not cancel_event.is_set()
 
         if on_wait is not None:
             on_wait()

@@ -11,6 +11,9 @@ sys.path.append(str(Path(__file__).parent.parent))
 from utils.recognition import create_embeddings_from_camera, save_embedding, add_new_user_with_embedding
 from utils.db_connect import get_all_users, delete_user_by_id
 from utils.camera_manager import CameraError, get_camera_manager, get_public_camera_status
+from utils.maintenance import maintenance
+from utils.stereo_calibration import calibration_session
+from utils.config_loader import load_config
 
 app = Flask(__name__)
 app.secret_key = os.urandom(24)
@@ -60,7 +63,11 @@ def authenticate():
     """API endpoint для аутентификации пользователя по лицу"""
     from utils.recognition import recognize_face_from_camera
     
-    is_authenticated, user_id, distance = recognize_face_from_camera()
+    try:
+        with maintenance.recognition():
+            is_authenticated, user_id, distance = recognize_face_from_camera()
+    except RuntimeError as error:
+        return jsonify(status='error', message=str(error)), 409
     
     if is_authenticated:
         # API подтверждает личность, но не управляет физическим замком
@@ -80,7 +87,11 @@ def authenticate():
 @app.route('/api/add_user', methods=['POST'])
 def add_user():
     name = request.args.get('name')
-    embeddings = create_embeddings_from_camera()
+    try:
+        with maintenance.recognition():
+            embeddings = create_embeddings_from_camera()
+    except RuntimeError as error:
+        return jsonify(status='error', message=str(error)), 409
         
     if embeddings:
         if len(embeddings) > 0:

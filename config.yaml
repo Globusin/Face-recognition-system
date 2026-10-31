@@ -22,6 +22,10 @@ cameras:
     height: 720
     fps: 30
 
+stereo_calibration:
+  output_dir: "data/calibration"
+  admin_token: ""  # Задается локально или через CALIBRATION_ADMIN_TOKEN
+
 # Параметры сохранения изображений
 image:
   output_dir: "data"
