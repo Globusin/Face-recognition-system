@@ -2,6 +2,8 @@
 from flask import Flask, Response, jsonify, request
 import os
 import sys
+import hmac
+from functools import wraps
 from pathlib import Path
 
 import cv2
@@ -17,6 +19,76 @@ from utils.config_loader import load_config
 
 app = Flask(__name__)
 app.secret_key = os.urandom(24)
+
+
+def calibration_admin(view):
+    @wraps(view)
+    def protected(*args, **kwargs):
+        token = os.environ.get('CALIBRATION_ADMIN_TOKEN') or load_config().get('stereo_calibration', {}).get('admin_token', '')
+        if not isinstance(token, str) or not token:
+            return jsonify(message='Калибровка отключена: не задан токен администратора'), 503
+        supplied = request.headers.get('X-Calibration-Token', '')
+        if not hmac.compare_digest(supplied.encode(), token.encode()):
+            return jsonify(message='Неверный токен администратора'), 401
+        try:
+            return view(*args, **kwargs)
+        except CameraError:
+            return jsonify(message='Камеры недоступны'), 503
+        except (ValueError, RuntimeError) as error:
+            return jsonify(message=str(error)), 409
+        except (cv2.error, OSError):
+            return jsonify(message='Ошибка расчёта или сохранения калибровки'), 500
+    return protected
+
+
+@app.get('/api/calibration/status')
+@calibration_admin
+def calibration_status():
+    return jsonify(calibration_session.status())
+
+
+@app.post('/api/calibration/frame/<role>')
+@calibration_admin
+def calibration_frame(role):
+    data = request.get_json(silent=True) or {}
+    image = calibration_session.download_frame(data.get('session_id'), data.get('observation_id'), role)
+    response = Response(image, mimetype='image/png')
+    response.headers['Content-Disposition'] = f'attachment; filename="calibration_{role}.png"'
+    response.headers['Cache-Control'] = 'no-store'
+    return response
+
+
+@app.post('/api/calibration/<action>')
+@calibration_admin
+def calibration_action(action):
+    data = request.get_json(silent=True) or {}
+    if not isinstance(data, dict):
+        return jsonify(message='Неверный формат запроса'), 400
+    if action == 'start':
+        if data.get('mounting_confirmed') is not True:
+            return jsonify(message='Подтвердите крепление камер и размеры доски'), 400
+        return jsonify(calibration_session.start(data.get('square_mm', 45.0)))
+    if action == 'observe':
+        rotation = data.get('rotation', 0)
+        if type(rotation) is not int or rotation not in range(4):
+            return jsonify(message='Недопустимый поворот сетки'), 400
+        return jsonify(calibration_session.observe(data.get('session_id'), rotation))
+    if action == 'capture':
+        return jsonify(calibration_session.save_pair(
+            data.get('session_id'), data.get('observation_id'),
+            data.get('validation') is True, data.get('orientation_confirmed'),
+        ))
+    if action == 'calculate':
+        return jsonify(calibration_session.calculate(data.get('session_id')))
+    if action == 'review':
+        return jsonify(calibration_session.review(data.get('session_id'), data.get('pair_index')))
+    if action == 'verify':
+        return jsonify(calibration_session.verify_observation(
+            data.get('session_id'), data.get('observation_id'), data.get('calibration_id'),
+            data.get('orientation_confirmed'), data.get('mounting_confirmed')))
+    if action == 'finish':
+        return jsonify(calibration_session.finish(data.get('session_id')))
+    return jsonify(message='Неизвестная команда'), 404
 
 
 @app.route('/api/cameras/status', methods=['GET'])
