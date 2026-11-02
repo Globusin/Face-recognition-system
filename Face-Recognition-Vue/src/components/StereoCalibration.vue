@@ -96,6 +96,11 @@
                     variant="outlined" hide-details :disabled="busy" />
                 <v-checkbox v-model="mountingConfirmed" hide-details :disabled="busy"
                     label="Крепление, фокус и режим камер не менялись после калибровки" />
+                <v-checkbox v-model="stationaryConfirmed" hide-details :disabled="busy"
+                    label="Доска закреплена неподвижно на время серии" />
+                <v-btn class="quality-button" prepend-icon="mdi-chart-timeline-variant" :loading="measuringQuality"
+                    :disabled="busy || !pairReady || !orientationConfirmed || !mountingConfirmed || !stationaryConfirmed || !calibrationId"
+                    @click="measureQuality">Измерить плоскостность и шум глубины</v-btn>
             </template>
 
             <template v-if="state.result">
@@ -133,6 +138,16 @@
                     <span>{{ metric.label }}</span><strong>{{ metric.value }}</strong>
                 </div>
             </div>
+            <template v-if="quality">
+                <h3 class="text-h6">Плоскостность и стабильность глубины</h3>
+                <v-chip variant="outlined">{{ quality.frames }} пар · {{ quality.elapsed_seconds.toFixed(1) }} с</v-chip>
+                <div class="calibration-metrics">
+                    <div v-for="metric in qualityMetrics" :key="metric.label" class="d-flex flex-column ga-1">
+                        <span>{{ metric.label }}</span><strong>{{ metric.value }} мм</strong>
+                    </div>
+                </div>
+                <span class="text-body-2">Отчёт: {{ qualityReportId }}</span>
+            </template>
         </template>
     </section>
 </template>
@@ -143,6 +158,7 @@ export default {
     data() {
         return {
             token: '', authorized: false, busy: false, calculating: false, error: '',
+            stationaryConfirmed: false, measuringQuality: false, quality: null, qualityReportId: '',
             mountingConfirmed: false, orientationConfirmed: false, validation: false,
             rotation: 0, observation: null, review: null, geometry: null, calibrationId: '', squareMm: 45, roles: ['primary', 'secondary'],
             rotations: [0, 1, 2, 3].map(value => ({ value, title: `${value * 90}°` })),
@@ -158,8 +174,24 @@ export default {
             return [['Средняя сторона клетки', 'mean_length_mm', 'мм'],
                 [`Средняя ошибка относительно ${this.geometry.expected_mm} мм`, 'mean_error_mm', 'мм'],
                 ['Максимальная ошибка', 'max_error_mm', 'мм'],
-                ['Средняя относительная ошибка', 'mean_error_percent', '%']]
+                ['Средняя относительная ошибка', 'mean_error_percent', '%'],
+                ['Среднее отклонение от плоскости', 'plane_mean_mm', 'мм'],
+                ['RMS отклонения от плоскости', 'plane_rms_mm', 'мм'],
+                ['Максимальное отклонение от плоскости', 'plane_max_mm', 'мм']]
+                .filter(([, key]) => this.geometry[key] != null)
                 .map(([label, key, unit]) => ({ label, value: `${Number(this.geometry[key]).toFixed(2)} ${unit}` }));
+        },
+        qualityMetrics() {
+            if (!this.quality) return [];
+            return [['Среднее отклонение от плоскости', 'plane_mean_mm'],
+                ['RMS отклонения от плоскости', 'plane_rms_mm'],
+                ['Максимальное отклонение от плоскости', 'plane_max_mm'],
+                ['Средняя глубина доски', 'mean_depth_mm'],
+                ['Среднее СКО глубины углов', 'point_depth_std_mean_mm'],
+                ['Максимальное СКО глубины угла', 'point_depth_std_max_mm'],
+                ['СКО глубины центра доски', 'center_depth_std_mm'],
+                ['Размах глубины центра доски', 'center_depth_range_mm']]
+                .map(([label, key]) => ({ label, value: Number(this.quality[key]).toFixed(3) }));
         },
         pairReady() {
             return this.observation?.found.primary && this.observation?.found.secondary;
@@ -179,6 +211,17 @@ export default {
         }
     },
     methods: {
+        async measureQuality() {
+            this.quality = null;
+            this.measuringQuality = true;
+            const data = await this.request('quality', { session_id: this.state.session_id,
+                observation_id: this.observation?.observation_id, calibration_id: this.calibrationId,
+                orientation_confirmed: this.orientationConfirmed, mounting_confirmed: this.mountingConfirmed,
+                stationary: this.stationaryConfirmed });
+            this.clearObservation();
+            if (data) { this.quality = data.quality; this.qualityReportId = data.report_id; }
+            this.measuringQuality = false;
+        },
         async verifyPair() {
             this.geometry = null;
             const data = await this.request('verify', { session_id: this.state.session_id,
@@ -240,13 +283,15 @@ export default {
             this.observation = null;
             this.orientationConfirmed = false;
             this.geometry = null;
+            this.quality = null;
         },
         async request(action, body) {
             if (this.busy) return null;
             this.busy = true;
             this.error = '';
             const controller = new AbortController();
-            const timeout = window.setTimeout(() => controller.abort(), action === 'calculate' ? 180000 : 30000);
+            const timeout = window.setTimeout(() => controller.abort(),
+                action === 'calculate' ? 180000 : action === 'quality' ? 90000 : 30000);
             try {
                 const response = await fetch(`/api/calibration/${action}`, {
                     method: body ? 'POST' : 'GET',
@@ -304,6 +349,8 @@ export default {
 
 <style scoped>
 .calibration { width: min(1100px, 100%); margin: 0 auto; }
+.quality-button { max-width: 100%; min-height: 48px; height: auto; padding-top: 8px; padding-bottom: 8px; }
+.quality-button :deep(.v-btn__content) { white-space: normal; text-align: center; }
 .calibration-images { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 16px; }
 .calibration-image { display: flex; align-items: center; justify-content: center; width: 100%; aspect-ratio: 16 / 9; background: #202020; overflow: hidden; }
 .calibration-image img { display: block; width: 100%; height: 100%; object-fit: contain; }

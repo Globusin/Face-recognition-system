@@ -11,6 +11,7 @@ from utils.camera_manager import (
 )
 from utils.logger import log_error, log_info
 from utils.timing import measure_time
+from utils.face_detection_preview import face_detection_preview
 
 _face_cascade = None
 _cascade_lock = threading.Lock()
@@ -71,7 +72,9 @@ def wait_for_face(stop_event, check_interval=0.5, on_wait=None, cancel_event=Non
             raise CameraError("Основная камера не отдаёт кадры")
         last_sequence = frame.sequence
 
-        if _has_face(frame.image, cascade):
+        faces = detect_faces(frame.image, cascade)
+        face_detection_preview.record(frame, faces, 'SEARCH')
+        if faces:
             return cancel_event is None or not cancel_event.is_set()
 
         if on_wait is not None:
@@ -129,6 +132,7 @@ def capture_face_frames(frames_count, timeout=10, frame_delay=0.15):
                 if last_captured_at is not None and captured_at - last_captured_at < frame_delay:
                     continue
                 faces = detect_faces(camera_frame.image, cascade)
+                face_detection_preview.record(camera_frame, faces, 'SERIES')
                 if len(faces) != 1:
                     continue
 

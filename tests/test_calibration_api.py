@@ -25,6 +25,11 @@ class CalibrationApiTests(unittest.TestCase):
                 patch('src.app.load_config', return_value={}):
             self.assertEqual(self.client.get('/api/calibration/status').status_code, 503)
 
+    def test_quality_requires_token_and_stationary_confirmation(self):
+        with patch.dict('os.environ', {'CALIBRATION_ADMIN_TOKEN': 'local-test-secret'}):
+            self.assertEqual(self.client.post('/api/calibration/quality', json={}).status_code, 401)
+            self.assertEqual(self.client.post('/api/calibration/quality', headers=self.header, json={}).status_code, 409)
+
     def test_review_saved_control_pairs(self):
         session = CalibrationSession()
         session_id = 'a' * 32

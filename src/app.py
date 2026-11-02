@@ -16,6 +16,7 @@ from utils.camera_manager import CameraError, get_camera_manager, get_public_cam
 from utils.maintenance import maintenance
 from utils.stereo_calibration import calibration_session
 from utils.config_loader import load_config
+from utils.face_detection_preview import face_detection_preview
 
 app = Flask(__name__)
 app.secret_key = os.urandom(24)
@@ -86,6 +87,10 @@ def calibration_action(action):
         return jsonify(calibration_session.verify_observation(
             data.get('session_id'), data.get('observation_id'), data.get('calibration_id'),
             data.get('orientation_confirmed'), data.get('mounting_confirmed')))
+    if action == 'quality':
+        return jsonify(calibration_session.measure_quality(
+            data.get('session_id'), data.get('observation_id'), data.get('calibration_id'),
+            data.get('orientation_confirmed'), data.get('mounting_confirmed'), data.get('stationary')))
     if action == 'finish':
         return jsonify(calibration_session.finish(data.get('session_id')))
     return jsonify(message='Неизвестная команда'), 404
@@ -112,6 +117,9 @@ def camera_frame(role):
         return jsonify({'status': 'error', 'message': 'Кадр не получен'}), 503
 
     image = frame.image
+    if role == 'primary' and request.args.get('haar') == '1':
+        face_detection_preview.enable()
+        image = face_detection_preview.render(frame)
     max_width = 640
     if image.shape[1] > max_width:
         scale = max_width / image.shape[1]

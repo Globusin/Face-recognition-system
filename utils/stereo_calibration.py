@@ -15,6 +15,7 @@ from utils.camera_manager import get_camera_manager
 from utils.config_loader import load_config
 from utils.maintenance import maintenance
 from utils.logger import log_info
+from utils.calibration_quality import measure_planarity, measure_depth_stability
 
 
 BOARD = (7, 7)
@@ -159,9 +160,7 @@ def solve_calibration(training, validation, image_size, square_mm=SQUARE_MM):
     return arrays, metrics
 
 
-def measure_board_geometry(primary, secondary, arrays, square_mm=SQUARE_MM):
-    """Размер клетки проверяется после триангуляции, а не задаётся ей"""
-    square_mm = validate_square_mm(square_mm)
+def triangulate_board(primary, secondary, arrays):
     points = []
 
     for corners, suffix in ((primary, '1'), (secondary, '2')):
@@ -181,6 +180,14 @@ def measure_board_geometry(primary, secondary, arrays, square_mm=SQUARE_MM):
     if not np.isfinite(xyz).all() or any(np.any(p[2] <= 0) for p in projected):
         raise ValueError('Точки находятся за камерой или имеют некорректную глубину')
 
+    return xyz, points
+
+
+def measure_board_geometry(primary, secondary, arrays, square_mm=SQUARE_MM):
+    """Размер клетки проверяется после триангуляции, а не задаётся ей"""
+    square_mm = validate_square_mm(square_mm)
+    xyz, points = triangulate_board(primary, secondary, arrays)
+
     grid = xyz.reshape(7, 7, 3)
     lengths = np.concatenate((np.linalg.norm(np.diff(grid, axis=0), axis=2).ravel(),
                               np.linalg.norm(np.diff(grid, axis=1), axis=2).ravel()))
@@ -193,7 +200,8 @@ def measure_board_geometry(primary, secondary, arrays, square_mm=SQUARE_MM):
     return dict(expected_mm=square_mm, segments=len(lengths), mean_length_mm=float(lengths.mean()),
                 mean_error_mm=float(errors.mean()), max_error_mm=float(errors.max()),
                 mean_error_percent=float(errors.mean() / square_mm * 100),
-                vertical_mean_px=float(vertical.mean()), vertical_max_px=float(vertical.max()))
+                vertical_mean_px=float(vertical.mean()), vertical_max_px=float(vertical.max()),
+                **measure_planarity(xyz))
 
 
 def write_json(path, data):
@@ -331,7 +339,7 @@ class CalibrationSession:
             for role in ('primary', 'secondary')
         }
 
-    def observe(self, session_id, rotation):
+    def observe(self, session_id, rotation, prepare_preview=True):
         with self.lock:
             self.require_session(session_id)
             self.observation = None
@@ -367,7 +375,8 @@ class CalibrationSession:
 
             return dict(observation_id=observation_id, delta_ms=pair.delta_ms,
                         found={role: points is not None for role, points in corners.items()},
-                        previews={role: annotated_preview(image, corners[role]) for role, image in images.items()})
+                        previews={role: annotated_preview(image, corners[role]) for role, image in images.items()}
+                        if prepare_preview else {})
 
     def download_frame(self, session_id, observation_id, role):
         with self.lock:
@@ -581,6 +590,78 @@ class CalibrationSession:
             log_info(f'Проверка геометрии: средняя ошибка {geometry["mean_error_mm"]:.3f} мм, '
                      f'максимальная {geometry["max_error_mm"]:.3f} мм, параметры не изменены')
             return dict(geometry=geometry, calibration_id=calibration_id, observation_id=observation_id)
+
+    def measure_quality(self, session_id, observation_id, calibration_id, confirmed, mounting_confirmed, stationary):
+        with self.lock:
+            if stationary is not True:
+                raise ValueError('Подтвердите, что доска закреплена неподвижно')
+
+            self.verify_observation(session_id, observation_id, calibration_id, confirmed, mounting_confirmed)
+            reference = self.observation
+            metadata, arrays = load_calibration(self._root() / calibration_id, self.signature, mounting_confirmed=True)
+            last_sequences = (reference['pair'].primary.sequence, reference['pair'].secondary.sequence)
+            point_series = []
+            frames = []
+            started = time.perf_counter()
+            report = dict(version=1, session_id=session_id, calibration_id=calibration_id,
+                          created_at=datetime.now(timezone.utc).isoformat(), square_mm=self.square_mm,
+                          calibration_created_at=metadata.get('created_at'), cameras=self.signature,
+                          image_size=list(self.image_size),
+                          requested_frames=10, interval_seconds=0.3, movement_limit_px=5,
+                          status='not_measurable', frames=frames)
+
+            try:
+                for _ in range(10):
+                    if time.perf_counter() - started > 25:
+                        raise ValueError('Серия не завершилась за 25 секунд')
+
+                    time.sleep(0.3)
+                    self.observe(session_id, reference['rotation'], prepare_preview=False)
+                    observation = self.observation
+                    sequences = (observation['pair'].primary.sequence, observation['pair'].secondary.sequence)
+                    if any(current <= previous for current, previous in zip(sequences, last_sequences)):
+                        raise ValueError('Повторный или устаревший кадр в серии')
+                    last_sequences = sequences
+
+                    for role in ('primary', 'secondary'):
+                        corners = observation['corners'][role]
+                        if corners is None:
+                            raise ValueError('Доска потеряна, повторите серию')
+                        shift = np.linalg.norm(corners - reference['corners'][role], axis=2)
+                        if shift.max() > 5:
+                            raise ValueError('Доска сдвинулась или изменился порядок углов, повторите серию')
+
+                    xyz, _ = triangulate_board(observation['corners']['primary'], observation['corners']['secondary'], arrays)
+                    point_series.append(xyz)
+                    frames.append(dict(primary_sequence=sequences[0], secondary_sequence=sequences[1],
+                                       primary_timestamp_ns=observation['pair'].primary.timestamp_ns,
+                                       secondary_timestamp_ns=observation['pair'].secondary.timestamp_ns,
+                                       delta_ms=observation['pair'].delta_ms, **measure_planarity(xyz)))
+
+                if time.perf_counter() - started > 25:
+                    raise ValueError('Серия не завершилась за 25 секунд')
+                quality = measure_depth_stability(point_series)
+                quality.update(plane_mean_mm=float(np.mean([f['plane_mean_mm'] for f in frames])),
+                               plane_rms_mm=float(np.sqrt(np.mean([f['plane_rms_mm'] ** 2 for f in frames]))),
+                               plane_max_mm=max(f['plane_max_mm'] for f in frames),
+                               elapsed_seconds=time.perf_counter() - started)
+                report.update(status='measured', quality=quality)
+                log_info(f'Качество стереопары: плоскость RMS={quality["plane_rms_mm"]:.3f} мм, '
+                         f'максимум={quality["plane_max_mm"]:.3f} мм, '
+                         f'среднее СКО глубины точек={quality["point_depth_std_mean_mm"]:.3f} мм')
+            except (ValueError, RuntimeError, cv2.error) as error:
+                report['reason'] = str(error)
+                log_info(f'Качество стереопары: измерение не завершено, {error}')
+                raise
+            finally:
+                self.observation = None
+                report['elapsed_seconds'] = time.perf_counter() - started
+                folder = self._session_folder() / 'quality_checks'
+                folder.mkdir(parents=True, exist_ok=True)
+                report_id = uuid.uuid4().hex
+                write_json(folder / f'{report_id}.json', report)
+
+            return dict(quality=quality, report_id=report_id, status='measured')
 
     def finish(self, session_id):
         with self.lock:

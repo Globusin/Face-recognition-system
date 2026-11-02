@@ -12,6 +12,8 @@
             </div>
 
             <v-divider :thickness="4" variant="dashed" />
+            <v-switch v-model="haarPreview" label="Разметка Haar: основная камера" hide-details
+                @update:model-value="refreshCameraFrames" />
 
             <div class="camera-grid ga-4">
                 <v-card
@@ -31,6 +33,9 @@
                             </v-chip>
                         </div>
                     </v-card-item>
+                    <v-chip v-if="haarPreview && camera.role === 'primary'" size="small" class="ma-2" variant="outlined">
+                        Диагностический снимок Haar
+                    </v-chip>
                     <div class="camera-preview">
                         <img
                             v-if="camera.frameUrl && !camera.frameError"
@@ -109,6 +114,7 @@ export default {
     data() {
         return {
             requestController: null,
+            haarPreview: false,
             stopped: false,
             statusLoading: false,
             status: 'Неизвестно',
@@ -234,7 +240,8 @@ export default {
                 }
 
                 this.cameraFrameErrors[role] = false;
-                this.cameraFrameUrls[role] = `/api/cameras/${role}/frame?t=${timestamp}`;
+                const diagnostic = this.haarPreview && role === 'primary' ? '&haar=1' : '';
+                this.cameraFrameUrls[role] = `/api/cameras/${role}/frame?t=${timestamp}${diagnostic}`;
             }
         },
 
