@@ -1,8 +1,8 @@
 # app.py - Основное приложение
-from flask import Flask, Response, jsonify, request
+from flask import Flask, Response, jsonify, request, session, send_from_directory
+from datetime import timedelta
 import os
 import sys
-import hmac
 from functools import wraps
 from pathlib import Path
 
@@ -15,22 +15,68 @@ from utils.db_connect import get_all_users, delete_user_by_id
 from utils.camera_manager import CameraError, get_camera_manager, get_public_camera_status
 from utils.maintenance import maintenance
 from utils.stereo_calibration import calibration_session
-from utils.config_loader import load_config
 from utils.face_detection_preview import face_detection_preview
+from utils.api_security import authorize_admin, login_admin
 
 app = Flask(__name__)
 app.secret_key = os.urandom(24)
+app.config.update(SESSION_COOKIE_SECURE=True, SESSION_COOKIE_HTTPONLY=True,
+                  SESSION_COOKIE_SAMESITE='Strict', PERMANENT_SESSION_LIFETIME=timedelta(minutes=15),
+                  SESSION_REFRESH_EACH_REQUEST=False, PREFERRED_URL_SCHEME='https', MAX_CONTENT_LENGTH=65536)
+
+
+@app.before_request
+def protect_api():
+    if not request.path.startswith('/api/'):
+        return None
+    if not request.is_secure:
+        return jsonify(message='Для API требуется HTTPS'), 403
+    if request.path not in ('/api/admin/login', '/api/authenticate'):
+        return authorize_admin()
+
+
+@app.after_request
+def security_headers(response):
+    response.headers['X-Content-Type-Options'] = 'nosniff'
+    response.headers['Referrer-Policy'] = 'no-referrer'
+    response.headers['Content-Security-Policy'] = "frame-ancestors 'none'"
+    if request.is_secure:
+        response.headers['Strict-Transport-Security'] = 'max-age=86400'
+    if request.path.startswith('/api/'):
+        response.headers['Cache-Control'] = 'no-store'
+    return response
+
+
+@app.post('/api/admin/login')
+def admin_login():
+    return login_admin()
+
+
+@app.get('/api/admin/session')
+def admin_session():
+    return jsonify(status='success')
+
+
+@app.post('/api/admin/logout')
+def admin_logout():
+    session.clear()
+    return jsonify(status='success')
+
+
+@app.get('/')
+@app.get('/<path:filename>')
+def frontend(filename='index.html'):
+    if filename.startswith('api/'):
+        return jsonify(message='Маршрут API не найден'), 404
+    folder = Path(__file__).resolve().parent.parent / 'Face-Recognition-Vue' / 'dist'
+    if filename in ('index.html', 'face-auth'):
+        filename = 'index.html'
+    return send_from_directory(folder, filename)
 
 
 def calibration_admin(view):
     @wraps(view)
     def protected(*args, **kwargs):
-        token = os.environ.get('CALIBRATION_ADMIN_TOKEN') or load_config().get('stereo_calibration', {}).get('admin_token', '')
-        if not isinstance(token, str) or not token:
-            return jsonify(message='Калибровка отключена: не задан токен администратора'), 503
-        supplied = request.headers.get('X-Calibration-Token', '')
-        if not hmac.compare_digest(supplied.encode(), token.encode()):
-            return jsonify(message='Неверный токен администратора'), 401
         try:
             return view(*args, **kwargs)
         except CameraError:

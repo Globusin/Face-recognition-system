@@ -133,6 +133,9 @@ jspm_packages/
 next-env.d.ts
 
 # Runtime data
+/certs/
+*.key
+*.pem
 pids
 *.pid
 *.seed

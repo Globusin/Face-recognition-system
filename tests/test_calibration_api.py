@@ -22,7 +22,7 @@ class CalibrationApiTests(unittest.TestCase):
 
     def test_disabled_without_configured_secret(self):
         with patch.dict('os.environ', {'CALIBRATION_ADMIN_TOKEN': ''}), \
-                patch('src.app.load_config', return_value={}):
+                patch('utils.api_security.admin_token', return_value=''):
             self.assertEqual(self.client.get('/api/calibration/status').status_code, 503)
 
     def test_quality_requires_token_and_stationary_confirmation(self):
@@ -131,6 +131,7 @@ class CalibrationApiTests(unittest.TestCase):
         gate = MaintenanceMode()
         gate.requested.set()
         with patch('src.app.maintenance', gate), \
+                patch('src.app.authorize_admin', return_value=None), \
                 patch('utils.recognition.recognize_face_from_camera') as recognize, \
                 patch('src.app.create_embeddings_from_camera') as enroll:
             self.assertEqual(self.client.post('/api/authenticate').status_code, 409)

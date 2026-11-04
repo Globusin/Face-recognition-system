@@ -56,6 +56,7 @@ sudo env DEBIAN_FRONTEND=noninteractive apt-get install -y \
     libpng-dev \
     nodejs \
     npm \
+    openssl \
     pkg-config \
     postgresql \
     postgresql-contrib \
@@ -226,9 +227,12 @@ for group in video gpio spi; do
 done
 
 echo
+"$VENV_PYTHON" "$PROJECT_DIR/scripts/setup_https.py"
+
 echo "Установка завершена"
 echo "Запуск backend: ./start_sudo.sh"
-echo "Запуск Vue: npm --prefix Face-Recognition-Vue run dev -- --host 0.0.0.0"
+echo "Vue и API доступны по HTTPS на порту 8443"
+echo "Административный доступ по умолчанию только через localhost или SSH-туннель"
 
 if [ ! -e /dev/spidev0.0 ]; then
     echo "SPI пока недоступен, TFT нужно проверить отдельно"

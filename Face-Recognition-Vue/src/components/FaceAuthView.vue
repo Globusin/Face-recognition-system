@@ -1,5 +1,8 @@
 <template>
     <div class="d-flex flex-column ga-6">
+        <AdminAccess v-if="!authorized" @authorized="authorized = true" />
+        <template v-else>
+        <v-btn prepend-icon="mdi-logout" variant="text" style="align-self: flex-end" @click="logout">Выйти</v-btn>
         <div class="d-flex justify-center">
             <v-tabs v-model="tab" inset>
                 <v-tab value="auth">
@@ -27,6 +30,7 @@
             <UsersManagement v-else-if="tab === 'users'" />
         </KeepAlive>
         <StereoCalibration v-if="tab === 'calibration'" />
+        </template>
     </div>
 </template>
 
@@ -34,13 +38,20 @@
 import FaceAuthentication from './FaceAuthentication.vue';
 import UsersManagement from './UsersManagement.vue';
 import StereoCalibration from './StereoCalibration.vue';
+import AdminAccess from './AdminAccess.vue';
 
 export default {
     name: 'FaceAuthView',
-    components: { FaceAuthentication, UsersManagement, StereoCalibration },
+    components: { FaceAuthentication, UsersManagement, StereoCalibration, AdminAccess },
     data() {
-        return { tab: 'auth' };
+        return { tab: 'auth', authorized: false };
     },
+    methods: {
+        async logout() {
+            const response = await fetch('/api/admin/logout', { method: 'POST' });
+            if (response.ok || response.status === 401) this.authorized = false;
+        }
+    }
 };
 </script>
 

@@ -235,6 +235,7 @@ export default {
             state: { active: false, session_id: null, training_pairs: 0, validation_pairs: 0, result: null }
         };
     },
+    mounted() { this.connect(); },
     watch: {
         faceSampleType: 'clearFaceResult',
         faceLighting: 'clearFaceResult',
@@ -350,7 +351,7 @@ export default {
         },
         async readJson(response) {
             if (!(response.headers.get('Content-Type') || '').includes('application/json')) {
-                throw new Error(`API вернул не JSON (HTTP ${response.status}). Проверьте, запущен ли backend на порту 5000; также возможна ошибка сервера или устаревший маршрут`);
+                throw new Error(`API вернул не JSON (HTTP ${response.status}). Проверьте HTTPS-сервер и синхронизацию файлов`);
             }
             return response.json();
         },

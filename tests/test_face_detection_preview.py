@@ -49,6 +49,7 @@ class FaceDetectionPreviewTests(unittest.TestCase):
         self.preview.enable()
         self.preview.record(self.frame, [(30, 50, 40, 40)], 'SEARCH')
         with patch('src.app.face_detection_preview', self.preview), \
+                patch('src.app.authorize_admin', return_value=None), \
                 patch('src.app.get_camera_manager') as manager, \
                 patch('utils.video_capture.detect_faces') as detect:
             manager.return_value.get_latest_frame.return_value = self.current

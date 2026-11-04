@@ -2,9 +2,9 @@
 Запуск основного приложения с функциональностью точки доступа
 """
 import sys
-import signal
 import atexit
 import threading
+import ssl
 from pathlib import Path
 
 sys.path.append(str(Path(__file__).parent.parent))
@@ -34,11 +34,6 @@ def cleanup():
         monitor_thread.join(timeout=3)
 
 
-def handle_signal(signum, frame):
-    del signum, frame
-    cleanup()
-    raise SystemExit(0)
-
 def create_hotsopt():
     config = load_config()
     hotspot_config = config.get('hotspot', {})
@@ -47,19 +42,11 @@ def create_hotsopt():
     
     start_hotspot(ssid, password)
 
-def main():
+def start_monitor(worker):
+    del worker
     global monitor_thread
-
-    # Регистрируем функцию очистки
+    # Поток создаётся внутри единственного worker, а не до fork
     atexit.register(cleanup)
-    signal.signal(signal.SIGINT, handle_signal)
-    signal.signal(signal.SIGTERM, handle_signal)
-
-    # Создаем точку доступа Wi-Fi
-    log_info("Запуск точки доступа Wi-Fi")
-    # create_hotsopt()
-    
-    # Монитор и Flask работают в одном процессе и используют общий CameraManager
     monitor_thread = threading.Thread(
         target=run_monitoring,
         args=(monitor_stop_event,),
@@ -68,9 +55,46 @@ def main():
     )
     monitor_thread.start()
 
-    # Запускаем Flask-приложение
-    log_info("Запуск Flask-приложения")
-    app.run(host='0.0.0.0', port=5000, debug=False, threaded=True)
+
+def tls_context(config, factory):
+    context = factory()
+    context.minimum_version = ssl.TLSVersion.TLSv1_2
+    return context
+
+
+def server_options():
+    root = Path(__file__).resolve().parent.parent
+    settings = load_config().get('server', {})
+    cert = root / settings.get('cert_file', 'data/security/server.crt')
+    key = root / settings.get('key_file', 'data/security/server.key')
+    # Ошибка сертификата останавливает запуск, перехода на HTTP нет
+    context = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+    context.load_cert_chain(cert, key)
+    if not (root / 'Face-Recognition-Vue/dist/index.html').is_file():
+        raise RuntimeError('Сначала соберите Vue: npm --prefix Face-Recognition-Vue run build')
+    return dict(bind=f'{settings.get("host", "0.0.0.0")}:{int(settings.get("port", 8443))}',
+                workers=1, worker_class='gthread', threads=4, timeout=240, graceful_timeout=15,
+                certfile=str(cert), keyfile=str(key), ssl_context=tls_context,
+                forwarded_allow_ips='', secure_scheme_headers={},
+                post_worker_init=start_monitor, worker_exit=lambda server, worker: cleanup(),
+                accesslog=None)
+
+
+def main():
+    from gunicorn.app.base import BaseApplication
+
+    options = server_options()
+
+    class HttpsApplication(BaseApplication):
+        def load_config(self):
+            for name, value in options.items():
+                self.cfg.set(name, value)
+
+        def load(self):
+            return app
+
+    log_info(f'Запуск HTTPS: {options["bind"]}')
+    HttpsApplication().run()
 
 if __name__ == '__main__':
     main()
