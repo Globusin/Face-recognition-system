@@ -101,6 +101,70 @@
                 <v-btn class="quality-button" prepend-icon="mdi-chart-timeline-variant" :loading="measuringQuality"
                     :disabled="busy || !pairReady || !orientationConfirmed || !mountingConfirmed || !stationaryConfirmed || !calibrationId"
                     @click="measureQuality">Измерить плоскостность и шум глубины</v-btn>
+                <v-divider />
+                <h3 class="text-h6">Геометрия лица по двум камерам</h3>
+                <div class="calibration-metrics">
+                    <v-select v-model="faceSampleType" :items="faceSamples" item-title="title" item-value="value"
+                        label="Тип предъявления" variant="outlined" hide-details :disabled="busy" />
+                    <v-select v-model="faceLighting" :items="lightingOptions" item-title="title" item-value="value"
+                        label="Освещение" variant="outlined" hide-details :disabled="busy" />
+                    <v-text-field v-model.number="faceDistance" type="number" min="1" step="1"
+                        label="Примерное расстояние, см" variant="outlined" hide-details :disabled="busy" />
+                </div>
+                <v-checkbox v-model="faceConsent" hide-details :disabled="busy"
+                    label="Участник согласен на опыт и обработку изображения лица" />
+                <v-btn prepend-icon="mdi-face-recognition" :loading="measuringFace"
+                    :disabled="busy || !mountingConfirmed || !calibrationId || !faceConsent || !validFaceDistance"
+                    @click="measureFace">{{ measuringFace ? 'Получение кадров и измерение' : 'Измерить геометрию лица' }}</v-btn>
+                <template v-if="faceResult">
+                    <v-alert :type="faceResult.status === 'measured' ? 'info' : 'warning'" variant="tonal">
+                        {{ faceResult.status === 'measured' ? 'Измерено · Живость не оценивалась' :
+                            `Невозможно измерить: ${faceResult.reason}` }}
+                    </v-alert>
+                    <div v-if="faceResult.diagnostics" class="calibration-metrics">
+                        <div class="d-flex flex-column ga-1">
+                            <span>Наибольшее расхождение после выравнивания</span>
+                            <strong>{{ faceResult.diagnostics.vertical_max_px.toFixed(2) }} px
+                                / предел {{ faceResult.diagnostics.vertical_limit_px.toFixed(2) }} px</strong>
+                        </div>
+                        <div class="d-flex flex-column ga-1">
+                            <span>Точка №{{ faceResult.diagnostics.worst_point_number }} · Красная отметка</span>
+                            <strong>{{ faceResult.diagnostics.worst_point_name }}</strong>
+                        </div>
+                        <div class="d-flex flex-column ga-1">
+                            <span>Точек выше допустимого расхождения</span>
+                            <strong>{{ faceResult.diagnostics.exceeding_points }} из 31</strong>
+                        </div>
+                    </div>
+                    <v-alert v-if="faceResult.preview_error" type="warning" variant="tonal">
+                        Не удалось подготовить разметку: {{ faceResult.preview_error }}
+                    </v-alert>
+                    <div v-if="faceResult.previews?.primary && faceResult.previews?.secondary" class="calibration-images">
+                        <div v-for="role in roles" :key="role" style="min-width: 0">
+                            <strong>{{ role === 'primary' ? 'Основная камера' : 'Дополнительная камера' }} · Исходный кадр</strong>
+                            <div class="calibration-image mt-2">
+                                <img :src="faceResult.previews[role]" :alt="`Точки лица: ${role}`">
+                            </div>
+                        </div>
+                    </div>
+                    <div v-if="faceResult.metrics" class="calibration-metrics">
+                        <div v-for="metric in faceMetrics" :key="metric.label" class="d-flex flex-column ga-1">
+                            <span>{{ metric.label }}</span><strong>{{ metric.value }}</strong>
+                        </div>
+                    </div>
+                    <span>Время {{ faceResult.elapsed_seconds.toFixed(2) }} с · Рассинхрон
+                        {{ faceResult.delta_ms == null ? '—' : faceResult.delta_ms.toFixed(1) + ' мс' }}</span>
+                    <span v-if="faceResult.pair_selection">
+                        Проверено пар: {{ faceResult.pair_selection.checked_pairs }} · Пропущено:
+                        {{ faceResult.pair_selection.skipped_pairs }} · Ожидание:
+                        {{ faceResult.pair_selection.wait_seconds.toFixed(2) }} с
+                    </span>
+                    <span v-if="faceResult.actual_fps">
+                        Средний FPS с начала захвата: основная {{ formatFps(faceResult.actual_fps.primary) }} ·
+                        дополнительная {{ formatFps(faceResult.actual_fps.secondary) }}
+                    </span>
+                    <span style="overflow-wrap: anywhere">Отчёт: {{ faceResult.report_id }}</span>
+                </template>
             </template>
 
             <template v-if="state.result">
@@ -159,13 +223,43 @@ export default {
         return {
             token: '', authorized: false, busy: false, calculating: false, error: '',
             stationaryConfirmed: false, measuringQuality: false, quality: null, qualityReportId: '',
+            faceConsent: false, measuringFace: false, faceResult: null, faceDistance: 60,
+            faceSampleType: 'live', faceLighting: 'daylight',
+            faceSamples: [{ title: 'Настоящее лицо', value: 'live' }, { title: 'Распечатка', value: 'print' },
+                { title: 'Фото на телефоне', value: 'phone_photo' }, { title: 'Видео на телефоне', value: 'phone_video' }],
+            lightingOptions: [{ title: 'Дневное', value: 'daylight' },
+                { title: 'Искусственное', value: 'artificial' }, { title: 'Смешанное', value: 'mixed' }],
             mountingConfirmed: false, orientationConfirmed: false, validation: false,
             rotation: 0, observation: null, review: null, geometry: null, calibrationId: '', squareMm: 45, roles: ['primary', 'secondary'],
             rotations: [0, 1, 2, 3].map(value => ({ value, title: `${value * 90}°` })),
             state: { active: false, session_id: null, training_pairs: 0, validation_pairs: 0, result: null }
         };
     },
+    watch: {
+        faceSampleType: 'clearFaceResult',
+        faceLighting: 'clearFaceResult',
+        faceDistance: 'clearFaceResult',
+        calibrationId: 'clearFaceResult',
+        mountingConfirmed: 'clearFaceResult',
+        faceConsent: 'clearFaceResult'
+    },
     computed: {
+        validFaceDistance() {
+            return typeof this.faceDistance === 'number' && Number.isFinite(this.faceDistance) && this.faceDistance > 0;
+        },
+        faceMetrics() {
+            const metrics = this.faceResult?.metrics;
+            if (!metrics) return [];
+            return [['Средняя глубина', 'mean_depth_mm', 'мм'],
+                ['Среднее отклонение от плоскости', 'plane_mean_mm', 'мм'],
+                ['RMS отклонения от плоскости', 'plane_rms_mm', 'мм'],
+                ['Максимальное отклонение', 'plane_max_mm', 'мм'],
+                ['Разность носа и глаз относительно плоскости', 'nose_eye_plane_difference_mm', 'мм'],
+                ['Среднее расхождение по вертикали', 'vertical_mean_px', 'px'],
+                ['Максимальное расхождение по вертикали', 'vertical_max_px', 'px'],
+                ['Максимальная ошибка репроекции', 'reprojection_max_px', 'px']]
+                .map(([label, key, unit]) => ({ label, value: `${Number(metrics[key]).toFixed(2)} ${unit}` }));
+        },
         validSquare() {
             return typeof this.squareMm === 'number' && Number.isFinite(this.squareMm) && this.squareMm > 0;
         },
@@ -211,6 +305,23 @@ export default {
         }
     },
     methods: {
+        formatFps(value) {
+            return typeof value === 'number' && Number.isFinite(value) ? value.toFixed(1) : 'нет данных';
+        },
+        clearFaceResult() {
+            this.faceResult = null;
+        },
+        async measureFace() {
+            this.faceResult = null;
+            this.measuringFace = true;
+            this.clearObservation();
+            const data = await this.request('face', { session_id: this.state.session_id,
+                calibration_id: this.calibrationId, mounting_confirmed: this.mountingConfirmed,
+                consent_confirmed: this.faceConsent, sample_type: this.faceSampleType,
+                lighting: this.faceLighting, distance_cm: this.faceDistance });
+            if (data) this.faceResult = data;
+            this.measuringFace = false;
+        },
         async measureQuality() {
             this.quality = null;
             this.measuringQuality = true;
@@ -291,7 +402,7 @@ export default {
             this.error = '';
             const controller = new AbortController();
             const timeout = window.setTimeout(() => controller.abort(),
-                action === 'calculate' ? 180000 : action === 'quality' ? 90000 : 30000);
+                action === 'calculate' ? 180000 : ['quality', 'face'].includes(action) ? 90000 : 30000);
             try {
                 const response = await fetch(`/api/calibration/${action}`, {
                     method: body ? 'POST' : 'GET',
@@ -317,7 +428,8 @@ export default {
         },
         async start() {
             const data = await this.request('start', { mounting_confirmed: this.mountingConfirmed, square_mm: this.squareMm });
-            if (data) { this.state = data; this.review = null; this.mountingConfirmed = false; this.clearObservation(); }
+            if (data) { this.state = data; this.review = null; this.mountingConfirmed = false; this.clearObservation();
+                this.faceResult = null; this.faceConsent = false; }
         },
         async observe() {
             this.clearObservation();
@@ -341,7 +453,7 @@ export default {
         },
         async finish() {
             const data = await this.request('finish', { session_id: this.state.session_id });
-            if (data) { this.state = data; this.clearObservation(); }
+            if (data) { this.state = data; this.clearObservation(); this.faceResult = null; this.faceConsent = false; }
         }
     }
 };

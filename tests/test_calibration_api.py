@@ -30,6 +30,35 @@ class CalibrationApiTests(unittest.TestCase):
             self.assertEqual(self.client.post('/api/calibration/quality', json={}).status_code, 401)
             self.assertEqual(self.client.post('/api/calibration/quality', headers=self.header, json={}).status_code, 409)
 
+    def test_face_measurement_requires_admin_and_is_not_an_access_decision(self):
+        with patch.dict('os.environ', {'CALIBRATION_ADMIN_TOKEN': 'local-test-secret'}):
+            self.assertEqual(self.client.post('/api/calibration/face', json={}).status_code, 401)
+            self.assertEqual(self.client.post('/api/calibration/face', headers=self.header, json={}).status_code, 409)
+            result = {'status': 'not_measurable', 'decision': 'not_evaluated', 'reason': 'Нет лица'}
+            with patch('src.app.calibration_session.measure_face', return_value=result) as measure:
+                response = self.client.post('/api/calibration/face', headers=self.header,
+                                            json={'session_id': 'test', 'sample_type': 'print'})
+                self.assertEqual(response.status_code, 200)
+                self.assertEqual(response.json, result)
+                self.assertEqual(response.headers['Cache-Control'], 'no-store')
+                self.assertEqual(measure.call_args.args[4], 'print')
+
+    def test_stereo_measurement_has_its_own_tft_state(self):
+        from utils.display import DisplayState
+        gate = MaintenanceMode()
+        gate.requested.set()
+        gate.stereo_measuring.set()
+        stop = threading.Event()
+        with patch('src.monitor.maintenance', gate), \
+                patch('src.monitor.initialize_display'), \
+                patch('src.monitor.initialize_lock_controller'), \
+                patch('src.monitor.safe_display_state') as display, \
+                patch('src.monitor.wait_or_stop', side_effect=lambda *_: stop.set()), \
+                patch('src.monitor.recognize_face_from_camera') as recognize:
+            run_monitoring(stop)
+        self.assertTrue(any(call.args[1] == DisplayState.STEREO_MEASURING for call in display.call_args_list))
+        recognize.assert_not_called()
+
     def test_review_saved_control_pairs(self):
         session = CalibrationSession()
         session_id = 'a' * 32

@@ -74,7 +74,10 @@ def run_monitoring(stop_event=None):
                 continue
 
             if maintenance.requested.is_set():
-                safe_display_state(display, DisplayState.CALIBRATING)
+                state = DisplayState.CALIBRATING
+                if maintenance.stereo_measuring.is_set():
+                    state = DisplayState.STEREO_MEASURING
+                safe_display_state(display, state)
                 wait_or_stop(stop_event, 0.5)
                 continue
 

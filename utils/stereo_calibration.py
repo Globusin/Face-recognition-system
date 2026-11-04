@@ -663,6 +663,82 @@ class CalibrationSession:
 
             return dict(quality=quality, report_id=report_id, status='measured')
 
+    def measure_face(self, session_id, calibration_id, mounting_confirmed, consent_confirmed,
+                     sample_type, lighting, distance_cm):
+        from utils.two_view_pad import inspect_pair, measurement_limits, wait_for_measurement_pair
+
+        with self.lock:
+            self.require_session(session_id)
+            if consent_confirmed is not True or mounting_confirmed is not True:
+                raise ValueError('Подтвердите согласие на опыт и неизменность камер')
+            if (not isinstance(calibration_id, str) or len(calibration_id) != 32
+                    or any(char not in '0123456789abcdef' for char in calibration_id)):
+                raise ValueError('Неверный номер сохранённой калибровки')
+            if sample_type not in ('live', 'print', 'phone_photo', 'phone_video'):
+                raise ValueError('Выберите тип предъявления')
+            if lighting not in ('daylight', 'artificial', 'mixed'):
+                raise ValueError('Выберите освещение')
+            if (isinstance(distance_cm, bool) or not isinstance(distance_cm, (int, float))
+                    or not np.isfinite(distance_cm) or distance_cm <= 0):
+                raise ValueError('Укажите приблизительное расстояние в сантиметрах')
+
+            limits = measurement_limits(load_config().get('stereo_pad', {}))
+            manager = get_camera_manager()
+            manager.start(require_secondary=True)
+            signature = self._camera_signature(manager)
+            metadata, arrays = load_calibration(self._root() / calibration_id, signature,
+                                                mounting_confirmed=True)
+            if metadata.get('units') != 'mm':
+                raise ValueError('Для измерения геометрии лица нужна калибровка в миллиметрах')
+
+            self.observation = None
+            report_id = uuid.uuid4().hex
+            started = time.perf_counter()
+            report = dict(version=1, algorithm='stereo_face_31_v1', report_id=report_id,
+                          session_id=session_id, calibration_id=calibration_id,
+                          calibration_created_at=metadata.get('created_at'), cameras=signature,
+                          created_at=datetime.now(timezone.utc).isoformat(), limits=limits,
+                          sample_type=sample_type, lighting=lighting, distance_cm=distance_cm,
+                          status='not_measurable', decision='not_evaluated')
+            maintenance.stereo_measuring.set()
+            report['pair_selection'] = dict(checked_pairs=0, skipped_pairs=0,
+                                             minimum_delta_ms=None, wait_seconds=0.0)
+            try:
+                pair = wait_for_measurement_pair(manager, limits, report['pair_selection'])
+                if self._camera_signature(manager) != signature:
+                    raise ValueError('Режим камер изменился во время опыта')
+                report.update(pair_number=pair.number, delta_ms=pair.delta_ms,
+                              primary_sequence=pair.primary.sequence,
+                              secondary_sequence=pair.secondary.sequence,
+                              primary_timestamp_ns=pair.primary.timestamp_ns,
+                              secondary_timestamp_ns=pair.secondary.timestamp_ns)
+                result = inspect_pair(pair, arrays, metadata['image_size'], limits)
+                report.update({key: value for key, value in result.items() if key != 'previews'})
+            except (ValueError, RuntimeError, cv2.error) as error:
+                result = dict(status='not_measurable', reason=str(error))
+                report.update(result)
+            finally:
+                maintenance.stereo_measuring.clear()
+
+            # Это средняя частота с начала работы камер, а не мгновенный FPS
+            camera_status = manager.get_status().get('cameras', {})
+            report['actual_fps'] = {role: camera_status.get(role, {}).get('actual_fps')
+                                    for role in ('primary', 'secondary')}
+
+            report['elapsed_seconds'] = time.perf_counter() - started
+            folder = self._session_folder() / 'stereo_pad_checks'
+            folder.mkdir(parents=True, exist_ok=True)
+            write_json(folder / f'{report_id}.json', report)
+            log_info(f'P3: {report["status"]}, отчёт {report_id}, '
+                     f'время {report["elapsed_seconds"]:.2f} с, решение о доступе не принималось')
+            if report['status'] == 'measured':
+                metrics = report['metrics']
+                log_info(f'P3: RMS плоскости {metrics["plane_rms_mm"]:.3f} мм, '
+                         f'глубина {metrics["mean_depth_mm"]:.1f} мм, рассинхрон {report["delta_ms"]:.1f} мс')
+            else:
+                log_info(f'P3: причина отказа измерения: {report["reason"]}')
+            return dict(report, previews=result.get('previews', {}))
+
     def finish(self, session_id):
         with self.lock:
             self.require_session(session_id)

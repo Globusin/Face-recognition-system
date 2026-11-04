@@ -21,6 +21,7 @@ class DisplayState(Enum):
     ACCESS_DENIED = "access_denied"
     ERROR = "error"
     CALIBRATING = "calibrating"
+    STEREO_MEASURING = "stereo_measuring"
 
 
 PROJECT_DIR = Path(__file__).resolve().parent.parent
@@ -60,6 +61,10 @@ DENIED_ANIMATION_REPEATS = 2
 
 # Заголовки, подписи и цвета для каждого состояния
 STATE_THEMES: Dict[DisplayState, Dict[str, Any]] = {
+    DisplayState.STEREO_MEASURING: {
+        "title": "СТЕРЕО", "subtitle": "Измерение\nлица",
+        "fg": (255, 255, 255), "bg": (20, 40, 20), "accent": (100, 220, 100),
+    },
     DisplayState.CALIBRATING: {
         "title": "КАМЕРЫ", "subtitle": "Калибровка",
         "fg": (255, 255, 255), "bg": (20, 40, 20), "accent": (100, 220, 100),
