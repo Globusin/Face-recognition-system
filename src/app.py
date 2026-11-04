@@ -134,6 +134,9 @@ def calibration_action(action):
         return jsonify(calibration_session.verify_observation(
             data.get('session_id'), data.get('observation_id'), data.get('calibration_id'),
             data.get('orientation_confirmed'), data.get('mounting_confirmed')))
+    if action == 'validate':
+        return jsonify(calibration_session.validate(data.get('session_id'), data.get('calibration_id'),
+            data.get('mounting_confirmed'), data.get('review_confirmed')))
     if action == 'quality':
         return jsonify(calibration_session.measure_quality(
             data.get('session_id'), data.get('observation_id'), data.get('calibration_id'),

@@ -68,7 +68,9 @@ class CalibrationGeometryTests(unittest.TestCase):
                 load_calibration(path, metadata['cameras'])
             with self.assertRaises(ValueError):
                 load_calibration(path, {}, mounting_confirmed=True)
-            _, arrays = load_calibration(path, metadata['cameras'], mounting_confirmed=True)
+            with self.assertRaises(ValueError):
+                load_calibration(path, metadata['cameras'], mounting_confirmed=True)
+            _, arrays = load_calibration(path, metadata['cameras'], mounting_confirmed=True, allow_unvalidated=True)
             self.assertEqual(arrays['Q'].shape, (4, 4))
             metadata['status'] = 'invalidated'
             (path / 'metadata.json').write_text(json.dumps(metadata))
@@ -172,7 +174,7 @@ class CalibrationSessionTests(unittest.TestCase):
         result = self.session.calculate(self.session.session_id)
         self.assertEqual(result['result']['status'], 'requires_review')
         self.assertEqual(set(result['rectified_previews']), {'primary', 'secondary'})
-        metadata, arrays = load_calibration(folder, self.session.signature, mounting_confirmed=True)
+        metadata, arrays = load_calibration(folder, self.session.signature, mounting_confirmed=True, allow_unvalidated=True)
         self.assertEqual(metadata['units'], 'mm')
         self.assertEqual(arrays['map2_y'].shape, (480, 640))
         # Новый процесс/объект видит сохранённую дату и результат

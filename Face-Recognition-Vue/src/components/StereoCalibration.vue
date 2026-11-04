@@ -96,6 +96,11 @@
                     variant="outlined" hide-details :disabled="busy" />
                 <v-checkbox v-model="mountingConfirmed" hide-details :disabled="busy"
                     label="Крепление, фокус и режим камер не менялись после калибровки" />
+                <v-chip variant="outlined">Независимых проверок в этой вкладке: {{ independentChecks.length }} / 3</v-chip>
+                <v-checkbox v-model="reviewConfirmed" hide-details :disabled="busy"
+                    label="Независимые пары сняты в разных положениях, размер клетки и выравнивание проверены" />
+                <v-btn class="quality-button" prepend-icon="mdi-check-decagram" :disabled="busy || !mountingConfirmed || !reviewConfirmed || !calibrationId"
+                    @click="validateCalibration">Подтвердить качество калибровки</v-btn>
                 <v-checkbox v-model="stationaryConfirmed" hide-details :disabled="busy"
                     label="Доска закреплена неподвижно на время серии" />
                 <v-btn class="quality-button" prepend-icon="mdi-chart-timeline-variant" :loading="measuringQuality"
@@ -171,8 +176,8 @@
                 <v-divider />
                 <div class="d-flex justify-space-between flex-wrap ga-2">
                     <h3 class="text-h6">Результат калибровки</h3>
-                    <v-chip :color="state.result.status === 'invalidated' ? 'error' : 'warning'">
-                        {{ state.result.status === 'invalidated' ? 'Недействительна' : 'Требует проверки' }}
+                    <v-chip :color="state.result.status === 'validated' ? 'success' : state.result.status === 'invalidated' ? 'error' : 'warning'">
+                        {{ state.result.status === 'validated' ? 'Проверена' : state.result.status === 'invalidated' ? 'Недействительна' : 'Требует проверки' }}
                     </v-chip>
                 </div>
                 <span class="text-body-2">{{ new Date(state.result.created_at).toLocaleString('ru-RU') }}</span>
@@ -223,6 +228,7 @@ export default {
         return {
             token: '', authorized: false, busy: false, calculating: false, error: '',
             stationaryConfirmed: false, measuringQuality: false, quality: null, qualityReportId: '',
+            reviewConfirmed: false, independentChecks: [],
             faceConsent: false, measuringFace: false, faceResult: null, faceDistance: 60,
             faceSampleType: 'live', faceLighting: 'daylight',
             faceSamples: [{ title: 'Настоящее лицо', value: 'live' }, { title: 'Распечатка', value: 'print' },
@@ -240,7 +246,11 @@ export default {
         faceSampleType: 'clearFaceResult',
         faceLighting: 'clearFaceResult',
         faceDistance: 'clearFaceResult',
-        calibrationId: 'clearFaceResult',
+        calibrationId() {
+            this.clearFaceResult();
+            this.independentChecks = [];
+            this.reviewConfirmed = false;
+        },
         mountingConfirmed: 'clearFaceResult',
         faceConsent: 'clearFaceResult'
     },
@@ -306,6 +316,12 @@ export default {
         }
     },
     methods: {
+        async validateCalibration() {
+            const data = await this.request('validate', { session_id: this.state.session_id,
+                calibration_id: this.calibrationId, mounting_confirmed: this.mountingConfirmed,
+                review_confirmed: this.reviewConfirmed });
+            if (data) this.state = data;
+        },
         formatFps(value) {
             return typeof value === 'number' && Number.isFinite(value) ? value.toFixed(1) : 'нет данных';
         },
@@ -339,7 +355,12 @@ export default {
             const data = await this.request('verify', { session_id: this.state.session_id,
                 observation_id: this.observation?.observation_id, calibration_id: this.calibrationId,
                 orientation_confirmed: this.orientationConfirmed, mounting_confirmed: this.mountingConfirmed });
-            if (data) this.geometry = data.geometry;
+            if (data) {
+                this.geometry = data.geometry;
+                if (data.independent_check_id && !this.independentChecks.includes(data.independent_check_id)) {
+                    this.independentChecks.push(data.independent_check_id);
+                }
+            }
         },
         async reviewPair(pairIndex = null) {
             this.review = null;
@@ -430,7 +451,8 @@ export default {
         async start() {
             const data = await this.request('start', { mounting_confirmed: this.mountingConfirmed, square_mm: this.squareMm });
             if (data) { this.state = data; this.review = null; this.mountingConfirmed = false; this.clearObservation();
-                this.faceResult = null; this.faceConsent = false; }
+                this.faceResult = null; this.faceConsent = false;
+                this.independentChecks = []; this.reviewConfirmed = false; }
         },
         async observe() {
             this.clearObservation();

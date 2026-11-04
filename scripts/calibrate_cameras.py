@@ -42,6 +42,7 @@ def main():
         tuple(metadata['image_size']), metadata['square_mm']
     )
     metadata.update(created_at=datetime.now(timezone.utc).isoformat(), metrics=metrics, status='requires_review')
+    metadata.pop('validation', None)
     np.savez_compressed(folder / 'parameters.npz', **arrays)
     write_json(folder / 'metadata.json', metadata)
     print(json.dumps(metrics, ensure_ascii=False, indent=2))

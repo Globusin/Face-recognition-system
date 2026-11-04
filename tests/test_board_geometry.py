@@ -3,6 +3,8 @@
 import unittest
 from unittest.mock import patch
 import time
+import tempfile
+from pathlib import Path
 
 import cv2
 import numpy as np
@@ -64,7 +66,11 @@ class BoardGeometryTests(unittest.TestCase):
         session.signature, session.image_size = {'test': 'mode'}, (1280, 720)
         session.observation = {'id': 'new-pair', 'created': time.monotonic(),
                                'corners': {'primary': self.primary, 'secondary': self.secondary}}
-        with patch.object(session, '_camera_signature', return_value=session.signature), \
+        with tempfile.TemporaryDirectory() as root, \
+                patch.object(session, '_root', return_value=Path(root)), \
+                patch('utils.stereo_calibration.calibration_fingerprint', return_value='test-fingerprint'), \
+                patch('utils.stereo_calibration.Path.read_bytes', return_value=b'test-parameters'), \
+                patch.object(session, '_camera_signature', return_value=session.signature), \
                 patch('utils.stereo_calibration.get_camera_manager'), \
                 patch('utils.stereo_calibration.load_calibration', return_value=(
                     {'image_size': [1280, 720], 'units': 'mm', 'board': [7, 7], 'square_mm': 45}, self.arrays)) as load:

@@ -30,6 +30,17 @@ class CalibrationApiTests(unittest.TestCase):
             self.assertEqual(self.client.post('/api/calibration/quality', json={}).status_code, 401)
             self.assertEqual(self.client.post('/api/calibration/quality', headers=self.header, json={}).status_code, 409)
 
+    def test_validate_requires_admin_and_server_side_checks(self):
+        with patch.dict('os.environ', {'CALIBRATION_ADMIN_TOKEN': 'local-test-secret'}):
+            self.assertEqual(self.client.post('/api/calibration/validate', json={}).status_code, 401)
+            self.assertEqual(self.client.post('/api/calibration/validate', headers=self.header, json={}).status_code, 409)
+            with patch('src.app.calibration_session.validate', return_value={'result': {'status': 'validated'}}) as validate:
+                response = self.client.post('/api/calibration/validate', headers=self.header, json={
+                    'session_id': 'session', 'calibration_id': 'calibration',
+                    'mounting_confirmed': True, 'review_confirmed': True})
+                self.assertEqual(response.status_code, 200)
+                validate.assert_called_once_with('session', 'calibration', True, True)
+
     def test_face_measurement_requires_admin_and_is_not_an_access_decision(self):
         with patch.dict('os.environ', {'CALIBRATION_ADMIN_TOKEN': 'local-test-secret'}):
             self.assertEqual(self.client.post('/api/calibration/face', json={}).status_code, 401)

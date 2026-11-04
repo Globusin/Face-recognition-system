@@ -5,6 +5,8 @@ import base64
 import threading
 import time
 import uuid
+import hashlib
+import io
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -210,7 +212,20 @@ def write_json(path, data):
     temporary.replace(path)
 
 
-def load_calibration(folder, cameras, mounting_confirmed=False):
+def calibration_fingerprint(folder, metadata, parameter_bytes=None):
+    identity = {key: metadata.get(key) for key in (
+        'version', 'created_at', 'session_id', 'units', 'board', 'square_mm', 'image_size', 'cameras')}
+    digest = hashlib.sha256(json.dumps(identity, sort_keys=True, allow_nan=False).encode())
+    if parameter_bytes is not None:
+        digest.update(parameter_bytes)
+        return digest.hexdigest()
+    with (Path(folder) / 'parameters.npz').open('rb') as source:
+        for block in iter(lambda: source.read(65536), b''):
+            digest.update(block)
+    return digest.hexdigest()
+
+
+def load_calibration(folder, cameras, mounting_confirmed=False, *, allow_unvalidated=False):
     """Не позволяет молча применить параметры другого режима или монтажа"""
     if not mounting_confirmed:
         raise ValueError('Подтвердите неизменность крепления, фокуса и режима камер')
@@ -220,12 +235,24 @@ def load_calibration(folder, cameras, mounting_confirmed=False):
         raise ValueError('Калибровка не соответствует камерам или версии формата')
     if metadata.get('status') == 'invalidated':
         raise ValueError('Калибровка помечена недействительной')
+    if metadata.get('status') not in ('requires_review', 'validated'):
+        raise ValueError('Неизвестный статус калибровки')
+    if not allow_unvalidated and metadata.get('status') != 'validated':
+        raise ValueError('Калибровка не подтверждена на независимых данных')
+    # Проверяем и загружаем одни и те же байты, даже если файл заменят параллельно
+    parameter_bytes = (Path(folder) / 'parameters.npz').read_bytes()
+    if not allow_unvalidated:
+        validation = metadata.get('validation', {})
+        if (metadata.get('status') != 'validated' or not isinstance(validation, dict)
+                or type(validation.get('checks_count')) is not int or validation['checks_count'] < 3
+                or validation.get('fingerprint') != calibration_fingerprint(folder, metadata, parameter_bytes)):
+            raise ValueError('Калибровка не подтверждена на независимых данных или параметры изменились')
 
     width, height = metadata['image_size']
     required = ('k1', 'k2', 'd1', 'd2', 'R', 'T', 'R1', 'R2', 'P1', 'P2', 'Q',
                 'map1_x', 'map1_y', 'map2_x', 'map2_y')
 
-    with np.load(Path(folder) / 'parameters.npz', allow_pickle=False) as archive:
+    with np.load(io.BytesIO(parameter_bytes), allow_pickle=False) as archive:
         arrays = {key: archive[key].copy() for key in required}
 
     if not all(np.isfinite(value).all() for value in arrays.values()):
@@ -289,7 +316,7 @@ class CalibrationSession:
             if self.result:
                 result = {key: self.result[key] for key in (
                     'version', 'created_at', 'session_id', 'units', 'board', 'square_mm',
-                    'image_size', 'metrics', 'status',
+                    'image_size', 'metrics', 'status', 'validation',
                 ) if key in self.result}
 
             return dict(active=self.active, session_id=self.session_id,
@@ -578,7 +605,12 @@ class CalibrationSession:
             if signature != self.signature:
                 raise ValueError('Режим камер изменился, обновите пару')
 
-            metadata, arrays = load_calibration(self._root() / calibration_id, signature, mounting_confirmed=True)
+            parameter_file = self._root() / calibration_id / 'parameters.npz'
+            parameter_bytes = parameter_file.read_bytes()
+            metadata, arrays = load_calibration(self._root() / calibration_id, signature,
+                                                mounting_confirmed=True, allow_unvalidated=True)
+            if parameter_file.read_bytes() != parameter_bytes:
+                raise ValueError('Параметры изменились во время проверки, повторите наблюдение')
             if metadata.get('units') != 'mm' or metadata.get('board') != list(BOARD):
                 raise ValueError('Параметры доски или единицы сохранённой калибровки не соответствуют проверке')
             if list(self.image_size) != metadata['image_size']:
@@ -587,9 +619,80 @@ class CalibrationSession:
             geometry = measure_board_geometry(observation['corners']['primary'], observation['corners']['secondary'],
                                               arrays, self.square_mm)
 
+            # Проверки внутри исходной сессии не служат независимым подтверждением
+            check_id = None
+            if session_id != calibration_id:
+                check_id = observation_id
+                folder = self._session_folder() / 'geometry_checks'
+                folder.mkdir(parents=True, exist_ok=True)
+                write_json(folder / f'{check_id}.json', dict(
+                    observation_id=observation_id, calibration_id=calibration_id,
+                    fingerprint=calibration_fingerprint(self._root() / calibration_id, metadata, parameter_bytes),
+                    geometry=geometry, primary_corners=observation['corners']['primary'].tolist(),
+                    created_at=datetime.now(timezone.utc).isoformat()))
+
             log_info(f'Проверка геометрии: средняя ошибка {geometry["mean_error_mm"]:.3f} мм, '
                      f'максимальная {geometry["max_error_mm"]:.3f} мм, параметры не изменены')
-            return dict(geometry=geometry, calibration_id=calibration_id, observation_id=observation_id)
+            return dict(geometry=geometry, calibration_id=calibration_id, observation_id=observation_id,
+                        independent_check_id=check_id)
+
+    def validate(self, session_id, calibration_id, mounting_confirmed, review_confirmed):
+        with self.lock:
+            self.require_session(session_id)
+            if review_confirmed is not True or mounting_confirmed is not True:
+                raise ValueError('Подтвердите проверку независимых пар и неизменность камер')
+            if (not isinstance(calibration_id, str) or len(calibration_id) != 32
+                    or any(char not in '0123456789abcdef' for char in calibration_id)
+                    or calibration_id == session_id):
+                raise ValueError('Для подтверждения нужна отдельная сессия проверок')
+            signature = self._camera_signature(get_camera_manager())
+            folder = self._root() / calibration_id
+            metadata, _ = load_calibration(folder, signature, mounting_confirmed=True, allow_unvalidated=True)
+            fingerprint = calibration_fingerprint(folder, metadata)
+            checks = [json.loads(path.read_text(encoding='utf-8'))
+                      for path in sorted((self._session_folder() / 'geometry_checks').glob('*.json'))]
+            checks = [check for check in checks if check.get('calibration_id') == calibration_id]
+            if len(checks) < 3:
+                raise ValueError('Нужны минимум три независимые проверки доски в новой сессии')
+
+            limits = load_config().get('stereo_calibration', {}).get('validation_limits', {})
+            limits = {key: limits.get(key, default) for key, default in (
+                ('mean_error_percent', 3.0), ('vertical_max_px', 3.0), ('plane_rms_mm', 2.0))}
+            if any(isinstance(value, bool) or not isinstance(value, (int, float))
+                   or not np.isfinite(value) or value <= 0 for value in limits.values()):
+                raise ValueError('Неверные пределы подтверждения калибровки')
+            positions = []
+            observations = set()
+            metric_names = dict(mean_error_percent='Средняя ошибка размера клетки (%)',
+                                vertical_max_px='Расхождение углов по вертикали (px)',
+                                plane_rms_mm='RMS отклонения от плоскости (мм)')
+            for check in checks:
+                if check.get('fingerprint') != fingerprint:
+                    raise ValueError('Параметры изменились после проверки, снимите независимые пары заново')
+                if check['observation_id'] in observations:
+                    raise ValueError('Одна пара не может считаться несколькими независимыми проверками')
+                observations.add(check['observation_id'])
+                for key, limit in limits.items():
+                    value = check['geometry'].get(key)
+                    if (isinstance(value, bool) or not isinstance(value, (int, float))
+                            or not np.isfinite(value) or value < 0 or value > limit):
+                        raise ValueError(f'Проверка {check["observation_id"]}: '
+                                         f'{metric_names[key]} не проходит предел {limit}')
+                corners = np.asarray(check['primary_corners'], dtype=np.float64)
+                if corners.shape != (49, 1, 2) or not np.isfinite(corners).all():
+                    raise ValueError('Неверные углы в отчёте проверки')
+                if any(np.linalg.norm(corners - previous, axis=2).mean() < 12 for previous in positions):
+                    raise ValueError('Проверки слишком похожи, нужны разные положения доски')
+                positions.append(corners)
+
+            metadata['status'] = 'validated'
+            metadata['validation'] = dict(fingerprint=fingerprint, checks_count=len(checks),
+                source_session_id=session_id, observation_ids=sorted(observations), limits=limits,
+                validated_at=datetime.now(timezone.utc).isoformat())
+            write_json(folder / 'metadata.json', metadata)
+            self.result = metadata
+            log_info(f'Калибровка {calibration_id}: подтверждена по {len(checks)} независимым парам')
+            return self.status()
 
     def measure_quality(self, session_id, observation_id, calibration_id, confirmed, mounting_confirmed, stationary):
         with self.lock:
@@ -598,7 +701,8 @@ class CalibrationSession:
 
             self.verify_observation(session_id, observation_id, calibration_id, confirmed, mounting_confirmed)
             reference = self.observation
-            metadata, arrays = load_calibration(self._root() / calibration_id, self.signature, mounting_confirmed=True)
+            metadata, arrays = load_calibration(self._root() / calibration_id, self.signature,
+                                                mounting_confirmed=True, allow_unvalidated=True)
             last_sequences = (reference['pair'].primary.sequence, reference['pair'].secondary.sequence)
             point_series = []
             frames = []
