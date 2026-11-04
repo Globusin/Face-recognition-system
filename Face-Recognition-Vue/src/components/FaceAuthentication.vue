@@ -12,7 +12,10 @@
             </div>
 
             <v-divider :thickness="4" variant="dashed" />
+            <v-btn v-if="!cameraStatus.preview_available" prepend-icon="mdi-camera-cog"
+                variant="outlined" @click="$emit('maintenance')">Обслуживание камер</v-btn>
             <v-switch v-model="haarPreview" label="Разметка Haar: основная камера" hide-details
+                :disabled="!cameraStatus.preview_available"
                 @update:model-value="refreshCameraFrames" />
 
             <div class="camera-grid ga-4">
@@ -23,10 +26,10 @@
                     style="border-color: #d9a441 !important"
                 >
                     <v-card-item>
-                        <div class="d-flex justify-space-between align-center ga-3">
-                            <div class="d-flex align-center ga-2">
+                        <div class="d-flex justify-space-between align-center flex-wrap ga-3">
+                            <div class="d-flex align-center ga-2" style="min-width: 0">
                                 <v-icon icon="mdi-video-outline"></v-icon>
-                                <span class="text-h6 text-brown-darken-2">{{ camera.title }}</span>
+                                <span class="text-h6 text-brown-darken-2" style="overflow-wrap: anywhere">{{ camera.title }}</span>
                             </div>
                             <v-chip :color="camera.color" size="small" variant="tonal">
                                 {{ camera.statusText }}
@@ -45,7 +48,7 @@
                         />
                         <div v-else class="camera-preview-empty">
                             <v-icon icon="mdi-camera-off-outline" size="36"></v-icon>
-                            <span>Кадр недоступен</span>
+                            <span>{{ cameraStatus.preview_available ? 'Кадр недоступен' : 'Предпросмотр отключён' }}</span>
                         </div>
                     </div>
                     <v-card-text class="camera-metrics ga-3">
@@ -111,6 +114,7 @@
 <script>
 export default {
     name: 'FaceAuthentication',
+    emits: ['maintenance'],
     data() {
         return {
             requestController: null,
@@ -128,6 +132,7 @@ export default {
             statusColor: '#5d4037',
 
             cameraStatus: {
+                preview_available: false,
                 source: 'configuration',
                 updated_at: null,
                 dual_mode_enabled: false,
@@ -160,6 +165,7 @@ export default {
     },
     activated() {
         this.stopped = false;
+        this.cameraStatus.preview_available = false;
         this.requestController = new AbortController();
         this.loadUsers();
         this.loadCameraStatus();
@@ -230,6 +236,10 @@ export default {
 
         refreshCameraFrames() {
             if (this.stopped || document.hidden) return;
+            if (!this.cameraStatus.preview_available) {
+                this.cameraFrameUrls = { primary: '', secondary: '' };
+                return;
+            }
             const timestamp = Date.now();
 
             for (const role of ['primary', 'secondary']) {
@@ -254,8 +264,14 @@ export default {
                     throw new Error(`HTTP error! status: ${response.status}`);
                 }
                 this.cameraStatus = await response.json();
+                if (!this.cameraStatus.preview_available) {
+                    this.haarPreview = false;
+                    this.cameraFrameUrls = { primary: '', secondary: '' };
+                }
             } catch (error) {
                 if (this.stopped) return;
+                this.cameraStatus.preview_available = false;
+                this.cameraFrameUrls = { primary: '', secondary: '' };
                 this.cameraStatus.cameras.primary.status = 'error';
                 this.cameraStatus.cameras.secondary.status = 'error';
             } finally {

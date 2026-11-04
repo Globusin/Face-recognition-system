@@ -17,6 +17,27 @@ _failures = {}
 _failure_lock = threading.Lock()
 
 
+class FramePreviewLimiter:
+    """Общий бюджет JPEG для устройства: две выдачи в секунду, всплеск до двух"""
+
+    def __init__(self, rate=2.0, burst=2.0):
+        self.rate = rate
+        self.burst = burst
+        self.tokens = burst
+        self.updated = time.monotonic()
+        self.lock = threading.Lock()
+
+    def retry_after(self):
+        with self.lock:
+            now = time.monotonic()
+            self.tokens = min(self.burst, self.tokens + max(0, now - self.updated) * self.rate)
+            self.updated = now
+            if self.tokens < 1:
+                return (1 - self.tokens) / self.rate
+            self.tokens -= 1
+            return 0
+
+
 def admin_token():
     config = load_config()
     token = os.environ.get('CALIBRATION_ADMIN_TOKEN') or config.get('stereo_calibration', {}).get('admin_token')

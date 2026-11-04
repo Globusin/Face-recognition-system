@@ -16,10 +16,11 @@ from utils.camera_manager import CameraError, get_camera_manager, get_public_cam
 from utils.maintenance import maintenance
 from utils.stereo_calibration import calibration_session
 from utils.face_detection_preview import face_detection_preview
-from utils.api_security import authorize_admin, login_admin
+from utils.api_security import authorize_admin, login_admin, FramePreviewLimiter
 
 app = Flask(__name__)
 app.secret_key = os.urandom(24)
+frame_preview_limit = FramePreviewLimiter()
 app.config.update(SESSION_COOKIE_SECURE=True, SESSION_COOKIE_HTTPONLY=True,
                   SESSION_COOKIE_SAMESITE='Strict', PERMANENT_SESSION_LIFETIME=timedelta(minutes=15),
                   SESSION_REFRESH_EACH_REQUEST=False, PREFERRED_URL_SCHEME='https', MAX_CONTENT_LENGTH=65536)
@@ -151,10 +152,35 @@ def calibration_action(action):
 @app.route('/api/cameras/status', methods=['GET'])
 def camera_status():
     """Возвращает безопасную телеметрию камер без кадров и device paths"""
-    return jsonify(get_public_camera_status())
+    status = get_public_camera_status()
+    status['preview_available'] = calibration_session.active and maintenance.requested.is_set()
+    return jsonify(status)
+
+
+def maintenance_preview(view):
+    @wraps(view)
+    def protected(*args, **kwargs):
+        # HTTPS и права администратора уже проверены в protect_api
+        # Не ставим JPEG в очередь за долгим расчётом калибровки
+        if not calibration_session.lock.acquire(blocking=False):
+            return jsonify(message='Обслуживание занято, повторите запрос позже'), 409
+        try:
+            if not calibration_session.active or not maintenance.requested.is_set():
+                return jsonify(message='Кадры доступны только в режиме обслуживания камер'), 403
+            if frame_preview_limit.retry_after() > 0:
+                response = jsonify(message='Превышена частота получения кадров')
+                response.status_code = 429
+                response.headers['Retry-After'] = '1'
+                return response
+            # finish использует тот же lock: режим не завершится посреди подготовки кадра
+            return view(*args, **kwargs)
+        finally:
+            calibration_session.lock.release()
+    return protected
 
 
 @app.route('/api/cameras/<role>/frame', methods=['GET'])
+@maintenance_preview
 def camera_frame(role):
     """Возвращает свежий уменьшенный кадр камеры"""
     if role not in ('primary', 'secondary'):

@@ -26,7 +26,7 @@
             </v-tabs>
         </div>
         <KeepAlive>
-            <FaceAuthentication v-if="tab === 'auth'" />
+            <FaceAuthentication v-if="tab === 'auth'" @maintenance="tab = 'calibration'" />
             <UsersManagement v-else-if="tab === 'users'" />
         </KeepAlive>
         <StereoCalibration v-if="tab === 'calibration'" />
