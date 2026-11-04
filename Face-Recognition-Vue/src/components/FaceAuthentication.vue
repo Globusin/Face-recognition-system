@@ -74,11 +74,11 @@
                     <strong>{{ cameraStatus.pairing.paired_frames }}</strong>
                 </div>
                 <div class="d-flex flex-column ga-1">
-                    <span class="text-body-2 text-brown">Средний рассинхрон</span>
+                    <span class="text-body-2 text-brown">Средняя разница получения</span>
                     <strong>{{ formatMs(cameraStatus.pairing.average_delta_ms) }}</strong>
                 </div>
                 <div class="d-flex flex-column ga-1">
-                    <span class="text-body-2 text-brown">Максимальный рассинхрон</span>
+                    <span class="text-body-2 text-brown">Максимальная разница получения</span>
                     <strong>{{ formatMs(cameraStatus.pairing.max_delta_ms) }}</strong>
                 </div>
                 <div class="d-flex flex-column ga-1">

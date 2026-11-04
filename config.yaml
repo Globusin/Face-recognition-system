@@ -43,7 +43,10 @@ stereo_calibration:
 # Только диагностические пределы качества измерения, не пороги живости
 stereo_pad:
   pair_wait_seconds: 5.0  # Сколько ждать подходящую пару без увеличения рассинхрона
-  max_delta_ms: 40.0
+  max_delta_ms: 10.0  # Разница доставки, не гарантия одновременной экспозиции
+  max_exposure_error_ms: 30.0  # Условная оценка с учётом теста движения
+  max_image_speed_px_s: 25.0
+  max_depth_uncertainty_mm: 5.0  # Только временной вклад, не полная ошибка глубины
   max_vertical_px: 8.0
   max_reprojection_px: 4.0
   min_disparity_px: 1.0

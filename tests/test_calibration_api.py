@@ -29,6 +29,8 @@ class CalibrationApiTests(unittest.TestCase):
         with patch.dict('os.environ', {'CALIBRATION_ADMIN_TOKEN': 'local-test-secret'}):
             self.assertEqual(self.client.post('/api/calibration/quality', json={}).status_code, 401)
             self.assertEqual(self.client.post('/api/calibration/quality', headers=self.header, json={}).status_code, 409)
+            self.assertEqual(self.client.post('/api/calibration/timing', json={}).status_code, 401)
+            self.assertEqual(self.client.post('/api/calibration/timing', headers=self.header, json={}).status_code, 409)
 
     def test_validate_requires_admin_and_server_side_checks(self):
         with patch.dict('os.environ', {'CALIBRATION_ADMIN_TOKEN': 'local-test-secret'}):

@@ -299,6 +299,7 @@ class CalibrationSession:
         self.signature = None # Устройства и режимы камер
         self.rectified_previews = None # Изображения в UI
         self.square_mm = SQUARE_MM # Сторона клетки
+        self.timing_result = None
 
     def status(self):
         with self.lock:
@@ -342,6 +343,7 @@ class CalibrationSession:
             self.signature = None
             self.rectified_previews = None
             self.active = True
+            self.timing_result = None
 
             log_info(f'Калибровка: начата сессия {self.session_id}, распознавание приостановлено')
             return self.status()
@@ -767,8 +769,90 @@ class CalibrationSession:
 
             return dict(quality=quality, report_id=report_id, status='measured')
 
+    def measure_timing(self, session_id, calibration_id, mounting_confirmed, motion_confirmed, rotation):
+        from utils.stereo_timing import estimate_timing, rectified_points, exposure_settings
+
+        with self.lock:
+            self.require_session(session_id)
+            if mounting_confirmed is not True or motion_confirmed is not True:
+                raise ValueError('Подтвердите монтаж и движение доски для теста времени')
+            if type(rotation) is not int or rotation not in range(4):
+                raise ValueError('Недопустимый поворот сетки')
+            if (not isinstance(calibration_id, str) or len(calibration_id) != 32
+                    or any(char not in '0123456789abcdef' for char in calibration_id)):
+                raise ValueError('Неверный номер калибровки')
+            self.timing_result = None
+            manager = get_camera_manager()
+            manager.start(require_secondary=True)
+            signature = self._camera_signature(manager)
+            metadata, arrays = load_calibration(self._root() / calibration_id, signature, mounting_confirmed=True)
+            if not np.allclose(arrays['P1'][1:], arrays['P2'][1:]):
+                raise ValueError('Тест вертикального движения требует горизонтальной ректификации')
+            samples = {'primary': [], 'secondary': []}
+            started = time.monotonic()
+            sequences = {'primary': -1, 'secondary': -1}
+            report = dict(version=1, algorithm='moving_board_vertical_v1', calibration_id=calibration_id,
+                          status='not_measurable', run_id=manager.get_status().get('run_id'),
+                          fingerprint=metadata['validation']['fingerprint'], samples=samples,
+                          timestamp_source='read_complete_monotonic', hardware_synchronized=False,
+                          created_at=datetime.now(timezone.utc).isoformat())
+            maintenance.timing_measuring.set()
+            try:
+                report['exposure_controls'] = exposure_settings(manager)
+                while time.monotonic() - started < 20:
+                    self.observe(session_id, rotation, prepare_preview=False)
+                    observation = self.observation
+                    for role, suffix in (('primary', '1'), ('secondary', '2')):
+                        frame = getattr(observation['pair'], role)
+                        if frame.sequence <= sequences[role]:
+                            raise ValueError('Повторный кадр в тесте времени')
+                        sequences[role] = frame.sequence
+                        corners = observation['corners'][role]
+                        if corners is not None:
+                            rectified = rectified_points(corners, arrays, suffix)
+                            samples[role].append([frame.timestamp_ns / 1e9, float(rectified[:, 1].mean())])
+                if self._camera_signature(manager) != signature:
+                    raise ValueError('Режим камер изменился во время теста')
+                if exposure_settings(manager) != report['exposure_controls']:
+                    raise ValueError('Выдержка изменилась во время теста')
+                report.update(estimate=estimate_timing(samples), status='measured',
+                              created_monotonic=time.monotonic(), recent_fps={
+                                  role: manager.get_status()['cameras'][role].get('recent_fps', 0)
+                                  for role in ('primary', 'secondary')})
+                self.timing_result = report
+            except (ValueError, RuntimeError, cv2.error) as error:
+                report['reason'] = str(error)
+            finally:
+                maintenance.timing_measuring.clear()
+                self.observation = None
+            report['elapsed_seconds'] = time.monotonic() - started
+            report['report_id'] = uuid.uuid4().hex
+            folder = self._session_folder() / 'timing_checks'
+            folder.mkdir(parents=True, exist_ok=True)
+            write_json(folder / f'{report["report_id"]}.json', report)
+            log_info(f'Тест времени: {report["status"]}, отчёт {report["report_id"]}')
+            return report
+
+    def _timing_context(self, manager, calibration_id, metadata, arrays, limits, confirmed):
+        from utils.stereo_timing import check_timing_profile, exposure_settings
+        from utils.two_view_pad import wait_for_measurement_pair, extract_face_points
+
+        check_timing_profile(self.timing_result, calibration_id, metadata['validation']['fingerprint'],
+                             manager.get_status(), time.monotonic(), confirmed)
+        if exposure_settings(manager) != self.timing_result.get('exposure_controls'):
+            raise ValueError('Выдержка камер изменилась после теста времени')
+        if self.timing_result['estimate']['uncertainty_ms'] > limits['max_exposure_error_ms']:
+            raise ValueError('Неопределённость теста времени превышает допустимый предел для лица')
+        pair = wait_for_measurement_pair(manager, limits, {})
+        previous = dict(points={}, timestamps={})
+        for role in ('primary', 'secondary'):
+            frame = getattr(pair, role)
+            previous['points'][role] = extract_face_points(frame.image)
+            previous['timestamps'][role] = frame.timestamp_ns
+        return dict(previous=previous, profile=self.timing_result)
+
     def measure_face(self, session_id, calibration_id, mounting_confirmed, consent_confirmed,
-                     sample_type, lighting, distance_cm):
+                     sample_type, lighting, distance_cm, timing_confirmed=False):
         from utils.two_view_pad import inspect_pair, measurement_limits, wait_for_measurement_pair
 
         with self.lock:
@@ -804,11 +888,19 @@ class CalibrationSession:
                           created_at=datetime.now(timezone.utc).isoformat(), limits=limits,
                           sample_type=sample_type, lighting=lighting, distance_cm=distance_cm,
                           status='not_measurable', decision='not_evaluated')
+            report['timestamp_source'] = 'read_complete_monotonic'
+            report['hardware_synchronized'] = False
             maintenance.stereo_measuring.set()
             report['pair_selection'] = dict(checked_pairs=0, skipped_pairs=0,
                                              minimum_delta_ms=None, wait_seconds=0.0)
             try:
+                temporal = self._timing_context(manager, calibration_id, metadata, arrays, limits, timing_confirmed)
+                if temporal is None:
+                    raise ValueError('Не оценена временная точность камер')
                 pair = wait_for_measurement_pair(manager, limits, report['pair_selection'])
+                from utils.stereo_timing import check_timing_profile
+                check_timing_profile(temporal['profile'], calibration_id, metadata['validation']['fingerprint'],
+                                     manager.get_status(), time.monotonic(), timing_confirmed)
                 if self._camera_signature(manager) != signature:
                     raise ValueError('Режим камер изменился во время опыта')
                 report.update(pair_number=pair.number, delta_ms=pair.delta_ms,
@@ -816,7 +908,13 @@ class CalibrationSession:
                               secondary_sequence=pair.secondary.sequence,
                               primary_timestamp_ns=pair.primary.timestamp_ns,
                               secondary_timestamp_ns=pair.secondary.timestamp_ns)
-                result = inspect_pair(pair, arrays, metadata['image_size'], limits)
+                result = inspect_pair(pair, arrays, metadata['image_size'], limits, temporal_context=temporal)
+                if temporal is not None:
+                    report['timing_report_id'] = temporal['profile']['report_id']
+                from utils.stereo_timing import exposure_settings
+                if exposure_settings(manager) != temporal['profile'].get('exposure_controls'):
+                    result.pop('metrics', None)
+                    result.update(status='not_measurable', reason='Выдержка изменилась во время измерения лица')
                 report.update({key: value for key, value in result.items() if key != 'previews'})
             except (ValueError, RuntimeError, cv2.error) as error:
                 result = dict(status='not_measurable', reason=str(error))

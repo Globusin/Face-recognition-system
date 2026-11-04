@@ -144,9 +144,13 @@ def calibration_action(action):
     if action == 'face':
         response = jsonify(calibration_session.measure_face(
             data.get('session_id'), data.get('calibration_id'), data.get('mounting_confirmed'),
-            data.get('consent_confirmed'), data.get('sample_type'), data.get('lighting'), data.get('distance_cm')))
+            data.get('consent_confirmed'), data.get('sample_type'), data.get('lighting'), data.get('distance_cm'),
+            data.get('timing_confirmed')))
         response.headers['Cache-Control'] = 'no-store'
         return response
+    if action == 'timing':
+        return jsonify(calibration_session.measure_timing(data.get('session_id'), data.get('calibration_id'),
+            data.get('mounting_confirmed'), data.get('motion_confirmed'), data.get('rotation', 0)))
     if action == 'finish':
         return jsonify(calibration_session.finish(data.get('session_id')))
     return jsonify(message='Неизвестная команда'), 404

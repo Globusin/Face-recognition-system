@@ -41,7 +41,7 @@
                     <v-chip>Обучающие: {{ state.training_pairs }} / 15</v-chip>
                     <v-chip>Контрольные: {{ state.validation_pairs }} / 3</v-chip>
                     <v-chip v-if="observation" variant="outlined">
-                        Рассинхрон {{ observation.delta_ms.toFixed(1) }} мс
+                        Разница получения {{ observation.delta_ms.toFixed(1) }} мс
                     </v-chip>
                 </div>
                 <div class="d-flex align-start flex-wrap ga-3">
@@ -107,6 +107,27 @@
                     :disabled="busy || !pairReady || !orientationConfirmed || !mountingConfirmed || !stationaryConfirmed || !calibrationId"
                     @click="measureQuality">Измерить плоскостность и шум глубины</v-btn>
                 <v-divider />
+                <h3 class="text-h6">Временная точность камер</h3>
+                <v-checkbox v-model="motionConfirmed" hide-details :disabled="busy"
+                    label="Доска готова к движению вверх-вниз с несколькими сменами направления" />
+                <v-btn class="quality-button" prepend-icon="mdi-timer-outline" :loading="measuringTiming"
+                    :disabled="busy || !mountingConfirmed || !motionConfirmed || !calibrationId" @click="measureTiming">
+                    Измерить задержку камер · 20 с
+                </v-btn>
+                <v-alert v-if="timingResult" :type="timingResult.status === 'measured' ? 'info' : 'warning'" variant="tonal">
+                    {{ timingResult.status === 'measured' ? 'Относительная задержка оценена · аппаратной синхронизации нет' : timingResult.reason }}
+                </v-alert>
+                <div v-if="timingResult?.estimate" class="calibration-metrics">
+                    <div><span>Поправка времени дополнительной камеры</span>
+                        <strong class="d-block">{{ timingResult.estimate.offset_ms.toFixed(1) }} мс</strong></div>
+                    <div><span>Эмпирическая неопределённость</span>
+                        <strong class="d-block">{{ timingResult.estimate.uncertainty_ms.toFixed(1) }} мс</strong></div>
+                    <div><span>Ошибка совпадения траекторий</span>
+                        <strong class="d-block">{{ timingResult.estimate.residual_rms_px.toFixed(2) }} px</strong></div>
+                </div>
+                <span v-if="timingResult" style="overflow-wrap: anywhere">Отчёт времени: {{ timingResult.report_id }}</span>
+                <v-checkbox v-model="timingConfirmed" hide-details :disabled="busy"
+                    label="Свет и настройки камер не менялись после теста времени" />
                 <h3 class="text-h6">Геометрия лица по двум камерам</h3>
                 <div class="calibration-metrics">
                     <v-select v-model="faceSampleType" :items="faceSamples" item-title="title" item-value="value"
@@ -119,7 +140,7 @@
                 <v-checkbox v-model="faceConsent" hide-details :disabled="busy"
                     label="Участник согласен на опыт и обработку изображения лица" />
                 <v-btn prepend-icon="mdi-face-recognition" :loading="measuringFace"
-                    :disabled="busy || !mountingConfirmed || !calibrationId || !faceConsent || !validFaceDistance"
+                    :disabled="busy || !mountingConfirmed || !calibrationId || !faceConsent || !validFaceDistance || !timingConfirmed"
                     @click="measureFace">{{ measuringFace ? 'Получение кадров и измерение' : 'Измерить геометрию лица' }}</v-btn>
                 <template v-if="faceResult">
                     <v-alert :type="faceResult.status === 'measured' ? 'info' : 'warning'" variant="tonal">
@@ -157,7 +178,7 @@
                             <span>{{ metric.label }}</span><strong>{{ metric.value }}</strong>
                         </div>
                     </div>
-                    <span>Время {{ faceResult.elapsed_seconds.toFixed(2) }} с · Рассинхрон
+                    <span>Время {{ faceResult.elapsed_seconds.toFixed(2) }} с · Разница получения кадров
                         {{ faceResult.delta_ms == null ? '—' : faceResult.delta_ms.toFixed(1) + ' мс' }}</span>
                     <span v-if="faceResult.pair_selection">
                         Проверено пар: {{ faceResult.pair_selection.checked_pairs }} · Пропущено:
@@ -194,7 +215,7 @@
                     <v-select v-if="review" :model-value="review.pair_index" :items="review.pair_indices"
                         label="Контрольная пара" hide-details variant="outlined" :disabled="busy"
                         style="max-width: 240px" @update:model-value="reviewPair" />
-                    <span v-if="review?.delta_ms != null">Рассинхрон {{ review.delta_ms.toFixed(1) }} мс</span>
+                    <span v-if="review?.delta_ms != null">Разница получения {{ review.delta_ms.toFixed(1) }} мс</span>
                 </div>
                 <div v-if="review || state.rectified_previews" class="calibration-images">
                     <div v-for="role in roles" :key="role" class="calibration-image">
@@ -229,6 +250,7 @@ export default {
             token: '', authorized: false, busy: false, calculating: false, error: '',
             stationaryConfirmed: false, measuringQuality: false, quality: null, qualityReportId: '',
             reviewConfirmed: false, independentChecks: [],
+            motionConfirmed: false, timingConfirmed: false, measuringTiming: false, timingResult: null,
             faceConsent: false, measuringFace: false, faceResult: null, faceDistance: 60,
             faceSampleType: 'live', faceLighting: 'daylight',
             faceSamples: [{ title: 'Настоящее лицо', value: 'live' }, { title: 'Распечатка', value: 'print' },
@@ -250,9 +272,12 @@ export default {
             this.clearFaceResult();
             this.independentChecks = [];
             this.reviewConfirmed = false;
+            this.timingResult = null;
+            this.timingConfirmed = false;
         },
         mountingConfirmed: 'clearFaceResult',
-        faceConsent: 'clearFaceResult'
+        faceConsent: 'clearFaceResult',
+        timingConfirmed: 'clearFaceResult'
     },
     computed: {
         validFaceDistance() {
@@ -268,7 +293,11 @@ export default {
                 ['Разность носа и глаз относительно плоскости', 'nose_eye_plane_difference_mm', 'мм'],
                 ['Среднее расхождение по вертикали', 'vertical_mean_px', 'px'],
                 ['Максимальное расхождение по вертикали', 'vertical_max_px', 'px'],
-                ['Максимальная ошибка репроекции', 'reprojection_max_px', 'px']]
+                ['Максимальная ошибка репроекции', 'reprojection_max_px', 'px'],
+                ['Оценённая временная ошибка', 'estimated_exposure_error_ms', 'мс'],
+                ['Временная погрешность глубины (условная)', 'timing_depth_uncertainty_mm', 'мм'],
+                ['Наблюдаемая скорость точек', 'observed_image_speed_px_s', 'px/с']]
+                .filter(([, key]) => metrics[key] != null)
                 .map(([label, key, unit]) => ({ label, value: `${Number(metrics[key]).toFixed(2)} ${unit}` }));
         },
         validSquare() {
@@ -316,6 +345,18 @@ export default {
         }
     },
     methods: {
+        async measureTiming() {
+            this.timingResult = null;
+            this.timingConfirmed = false;
+            this.faceResult = null;
+            this.measuringTiming = true;
+            const data = await this.request('timing', { session_id: this.state.session_id,
+                calibration_id: this.calibrationId, mounting_confirmed: this.mountingConfirmed,
+                motion_confirmed: this.motionConfirmed, rotation: this.rotation });
+            this.clearObservation();
+            if (data) this.timingResult = data;
+            this.measuringTiming = false;
+        },
         async validateCalibration() {
             const data = await this.request('validate', { session_id: this.state.session_id,
                 calibration_id: this.calibrationId, mounting_confirmed: this.mountingConfirmed,
@@ -335,7 +376,7 @@ export default {
             const data = await this.request('face', { session_id: this.state.session_id,
                 calibration_id: this.calibrationId, mounting_confirmed: this.mountingConfirmed,
                 consent_confirmed: this.faceConsent, sample_type: this.faceSampleType,
-                lighting: this.faceLighting, distance_cm: this.faceDistance });
+                lighting: this.faceLighting, distance_cm: this.faceDistance, timing_confirmed: this.timingConfirmed });
             if (data) this.faceResult = data;
             this.measuringFace = false;
         },
@@ -424,7 +465,7 @@ export default {
             this.error = '';
             const controller = new AbortController();
             const timeout = window.setTimeout(() => controller.abort(),
-                action === 'calculate' ? 180000 : ['quality', 'face'].includes(action) ? 90000 : 30000);
+                action === 'calculate' ? 180000 : ['quality', 'face', 'timing'].includes(action) ? 90000 : 30000);
             try {
                 const response = await fetch(`/api/calibration/${action}`, {
                     method: body ? 'POST' : 'GET',
@@ -452,7 +493,8 @@ export default {
             const data = await this.request('start', { mounting_confirmed: this.mountingConfirmed, square_mm: this.squareMm });
             if (data) { this.state = data; this.review = null; this.mountingConfirmed = false; this.clearObservation();
                 this.faceResult = null; this.faceConsent = false;
-                this.independentChecks = []; this.reviewConfirmed = false; }
+                this.independentChecks = []; this.reviewConfirmed = false;
+                this.timingResult = null; this.timingConfirmed = false; }
         },
         async observe() {
             this.clearObservation();

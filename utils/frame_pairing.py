@@ -9,6 +9,7 @@ from typing import Any, Optional
 class CameraFrame:
     role: str
     sequence: int
+    # Время получения после read(), не timestamp экспозиции сенсора
     timestamp_ns: int
     # Изображение недоступно через __repr__
     image: Any = field(repr=False)

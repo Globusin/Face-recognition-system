@@ -55,7 +55,7 @@ class StereoFaceTests(unittest.TestCase):
                 CameraFrame('primary', number, now - 100_000_000, self.pair.primary.image),
                 CameraFrame('secondary', number, now - 100_000_000 + int(delta * 1_000_000),
                             self.pair.secondary.image), delta)
-        candidates = [pair(8, 65), pair(9, 58.2), pair(10, 12)]
+        candidates = [pair(8, 65), pair(9, 58.2), pair(10, 8)]
         from unittest.mock import Mock
         manager = Mock()
         manager.get_status.return_value = {'pairing': {'paired_frames': 7}}
@@ -65,7 +65,7 @@ class StereoFaceTests(unittest.TestCase):
         self.assertEqual(selected.number, 10)
         self.assertEqual(selection['checked_pairs'], 3)
         self.assertEqual(selection['skipped_pairs'], 2)
-        self.assertEqual(selection['minimum_delta_ms'], 12)
+        self.assertEqual(selection['minimum_delta_ms'], 8)
         self.assertEqual([call.kwargs['after_number'] for call in manager.get_pair.call_args_list], [7, 8, 9])
 
     def test_wait_timeout_reports_best_delta_without_accepting_it(self):
@@ -76,7 +76,7 @@ class StereoFaceTests(unittest.TestCase):
         manager.get_pair.return_value = self.pair
         selection = {}
         with patch('utils.two_view_pad.time.monotonic', side_effect=[0, 0, 0, 6, 6]):
-            with self.assertRaisesRegex(ValueError, '58.2.*40.0'):
+            with self.assertRaisesRegex(ValueError, '58.2.*10.0'):
                 wait_for_measurement_pair(manager, DEFAULT_LIMITS, selection)
         self.assertEqual(selection['skipped_pairs'], 1)
         manager.get_pair.assert_called_once()
@@ -167,8 +167,10 @@ class StereoFaceTests(unittest.TestCase):
                     extract.assert_not_called()
 
     def test_measured_preview_does_not_modify_original(self):
-        with patch('utils.two_view_pad.extract_face_points', side_effect=self.project()):
-            result = inspect_pair(self.pair, self.arrays, [1280, 720], DEFAULT_LIMITS)
+        with patch('utils.two_view_pad.extract_face_points', side_effect=self.project()), \
+                patch('utils.stereo_timing.timing_depth_uncertainty', return_value={}):
+            result = inspect_pair(self.pair, self.arrays, [1280, 720], DEFAULT_LIMITS,
+                                  temporal_context={'previous': {}, 'profile': {}})
         self.assertEqual(result['status'], 'measured')
         self.assertTrue(result['previews']['primary'].startswith('data:image/jpeg;base64,'))
         self.assertFalse(self.pair.primary.image.any())
@@ -229,8 +231,12 @@ class StereoFaceTests(unittest.TestCase):
                 patch.object(session, '_root', return_value=Path(root)), \
                 patch.object(session, '_camera_signature', return_value={'test': 'camera'}), \
                 patch('utils.stereo_calibration.get_camera_manager', return_value=manager), \
+                patch.object(session, '_timing_context', return_value={'previous': {}, 'profile': {'report_id': 'mock'}}), \
+                patch('utils.stereo_timing.check_timing_profile'), \
+                patch('utils.stereo_timing.exposure_settings', return_value=None), \
+                patch('utils.stereo_timing.timing_depth_uncertainty', return_value={}), \
                 patch('utils.stereo_calibration.load_calibration',
-                      return_value=({'units': 'mm', 'image_size': [1280, 720]}, self.arrays)), \
+                      return_value=({'units': 'mm', 'image_size': [1280, 720], 'validation': {'fingerprint': 'mock'}}, self.arrays)), \
                 patch('utils.two_view_pad.extract_face_points', side_effect=points):
             result = session.measure_face('test-session', 'a' * 32, True, True, 'live', 'daylight', 65)
             report_path = next((Path(root) / 'test-session' / 'stereo_pad_checks').glob('*.json'))

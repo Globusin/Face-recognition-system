@@ -13,9 +13,10 @@ LANDMARK_GROUPS = ('left_eyebrow', 'right_eyebrow', 'nose_bridge',
 GROUP_LENGTHS = (5, 5, 4, 5, 6, 6)
 GROUP_NAMES = ('левая бровь', 'правая бровь', 'переносица',
                'низ носа', 'левый глаз', 'правый глаз')
-DEFAULT_LIMITS = dict(max_delta_ms=40.0, max_vertical_px=8.0,
+DEFAULT_LIMITS = dict(max_delta_ms=10.0, max_vertical_px=8.0,
                       max_reprojection_px=4.0, min_disparity_px=1.0,
-                      min_depth_mm=150.0, max_depth_mm=2000.0, pair_wait_seconds=5.0)
+                      min_depth_mm=150.0, max_depth_mm=2000.0, pair_wait_seconds=5.0,
+                      max_exposure_error_ms=30.0, max_image_speed_px_s=25.0, max_depth_uncertainty_mm=5.0)
 
 
 def measurement_limits(settings):
@@ -173,7 +174,7 @@ def measure_face_geometry(primary, secondary, arrays, limits, diagnostics=None):
                 reprojection_max_px=float(max(reprojection)))
 
 
-def inspect_pair(pair, arrays, image_size, limits):
+def inspect_pair(pair, arrays, image_size, limits, temporal_context=None):
     """Одна программно согласованная пара, без повторного использования кадров"""
     started = time.perf_counter()
     images = {role: getattr(pair, role).image for role in ('primary', 'secondary')}
@@ -193,6 +194,12 @@ def inspect_pair(pair, arrays, image_size, limits):
 
         points = {role: extract_face_points(image) for role, image in images.items()}
         metrics = measure_face_geometry(points['primary'], points['secondary'], arrays, limits, diagnostics)
+        if temporal_context is None:
+            raise ValueError('Не оценена временная точность камер')
+        from utils.stereo_timing import timing_depth_uncertainty
+        uncertainty = timing_depth_uncertainty(points, pair, temporal_context['previous'],
+                                              temporal_context['profile'], arrays, limits)
+        metrics.update(uncertainty)
         result = dict(status='measured', metrics=metrics)
     except (ValueError, RuntimeError, ImportError, cv2.error) as error:
         result = dict(status='not_measurable', reason=str(error))

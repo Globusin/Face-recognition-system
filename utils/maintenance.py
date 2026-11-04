@@ -10,6 +10,7 @@ class MaintenanceMode:
         self.requested = threading.Event()
         self.door_open = threading.Event()
         self.stereo_measuring = threading.Event()
+        self.timing_measuring = threading.Event()
 
     def begin(self):
         self.requested.set()

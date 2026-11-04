@@ -77,6 +77,8 @@ def run_monitoring(stop_event=None):
                 state = DisplayState.CALIBRATING
                 if maintenance.stereo_measuring.is_set():
                     state = DisplayState.STEREO_MEASURING
+                if maintenance.timing_measuring.is_set():
+                    state = DisplayState.TIMING_TEST
                 safe_display_state(display, state)
                 wait_or_stop(stop_event, 0.5)
                 continue
