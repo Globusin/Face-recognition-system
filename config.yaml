@@ -22,6 +22,37 @@ cameras:
     height: 720
     fps: 30
 
+server:
+  host: "0.0.0.0"
+  port: 8443
+  cert_file: "data/security/server.crt"
+  key_file: "data/security/server.key"
+
+security:
+  admin_token_file: "data/security/admin-token"
+  admin_networks: ["127.0.0.1/32", "::1/128"]  # Добавьте только адрес компьютера администратора
+
+stereo_calibration:
+  validation_limits:  # Начальные критерии геометрии, не пороги живости
+    mean_error_percent: 3.0
+    vertical_max_px: 3.0
+    plane_rms_mm: 2.0
+  output_dir: "data/calibration"
+  admin_token: ""  # Задается локально или через CALIBRATION_ADMIN_TOKEN
+
+# Только диагностические пределы качества измерения, не пороги живости
+stereo_pad:
+  pair_wait_seconds: 5.0  # Сколько ждать подходящую пару без увеличения рассинхрона
+  max_delta_ms: 10.0  # Разница доставки, не гарантия одновременной экспозиции
+  max_exposure_error_ms: 30.0  # Условная оценка с учётом теста движения
+  max_image_speed_px_s: 25.0
+  max_depth_uncertainty_mm: 5.0  # Только временной вклад, не полная ошибка глубины
+  max_vertical_px: 8.0
+  max_reprojection_px: 4.0
+  min_disparity_px: 1.0
+  min_depth_mm: 150.0
+  max_depth_mm: 2000.0
+
 # Параметры сохранения изображений
 image:
   output_dir: "data"

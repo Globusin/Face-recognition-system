@@ -1,7 +1,9 @@
 # app.py - Основное приложение
-from flask import Flask, Response, jsonify, request
+from flask import Flask, Response, jsonify, request, session, send_from_directory
+from datetime import timedelta
 import os
 import sys
+from functools import wraps
 from pathlib import Path
 
 import cv2
@@ -11,18 +13,181 @@ sys.path.append(str(Path(__file__).parent.parent))
 from utils.recognition import create_embeddings_from_camera, save_embedding, add_new_user_with_embedding
 from utils.db_connect import get_all_users, delete_user_by_id
 from utils.camera_manager import CameraError, get_camera_manager, get_public_camera_status
+from utils.maintenance import maintenance
+from utils.stereo_calibration import calibration_session
+from utils.face_detection_preview import face_detection_preview
+from utils.api_security import authorize_admin, login_admin, FramePreviewLimiter
 
 app = Flask(__name__)
 app.secret_key = os.urandom(24)
+frame_preview_limit = FramePreviewLimiter()
+app.config.update(SESSION_COOKIE_SECURE=True, SESSION_COOKIE_HTTPONLY=True,
+                  SESSION_COOKIE_SAMESITE='Strict', PERMANENT_SESSION_LIFETIME=timedelta(minutes=15),
+                  SESSION_REFRESH_EACH_REQUEST=False, PREFERRED_URL_SCHEME='https', MAX_CONTENT_LENGTH=65536)
+
+
+@app.before_request
+def protect_api():
+    if not request.path.startswith('/api/'):
+        return None
+    if not request.is_secure:
+        return jsonify(message='Для API требуется HTTPS'), 403
+    if request.path not in ('/api/admin/login', '/api/authenticate'):
+        return authorize_admin()
+
+
+@app.after_request
+def security_headers(response):
+    response.headers['X-Content-Type-Options'] = 'nosniff'
+    response.headers['Referrer-Policy'] = 'no-referrer'
+    response.headers['Content-Security-Policy'] = "frame-ancestors 'none'"
+    if request.is_secure:
+        response.headers['Strict-Transport-Security'] = 'max-age=86400'
+    if request.path.startswith('/api/'):
+        response.headers['Cache-Control'] = 'no-store'
+    return response
+
+
+@app.post('/api/admin/login')
+def admin_login():
+    return login_admin()
+
+
+@app.get('/api/admin/session')
+def admin_session():
+    return jsonify(status='success')
+
+
+@app.post('/api/admin/logout')
+def admin_logout():
+    session.clear()
+    return jsonify(status='success')
+
+
+@app.get('/')
+@app.get('/<path:filename>')
+def frontend(filename='index.html'):
+    if filename.startswith('api/'):
+        return jsonify(message='Маршрут API не найден'), 404
+    folder = Path(__file__).resolve().parent.parent / 'Face-Recognition-Vue' / 'dist'
+    if filename in ('index.html', 'face-auth'):
+        filename = 'index.html'
+    return send_from_directory(folder, filename)
+
+
+def calibration_admin(view):
+    @wraps(view)
+    def protected(*args, **kwargs):
+        try:
+            return view(*args, **kwargs)
+        except CameraError:
+            return jsonify(message='Камеры недоступны'), 503
+        except (ValueError, RuntimeError) as error:
+            return jsonify(message=str(error)), 409
+        except (cv2.error, OSError):
+            return jsonify(message='Ошибка расчёта или сохранения калибровки'), 500
+    return protected
+
+
+@app.get('/api/calibration/status')
+@calibration_admin
+def calibration_status():
+    return jsonify(calibration_session.status())
+
+
+@app.post('/api/calibration/frame/<role>')
+@calibration_admin
+def calibration_frame(role):
+    data = request.get_json(silent=True) or {}
+    image = calibration_session.download_frame(data.get('session_id'), data.get('observation_id'), role)
+    response = Response(image, mimetype='image/png')
+    response.headers['Content-Disposition'] = f'attachment; filename="calibration_{role}.png"'
+    response.headers['Cache-Control'] = 'no-store'
+    return response
+
+
+@app.post('/api/calibration/<action>')
+@calibration_admin
+def calibration_action(action):
+    data = request.get_json(silent=True) or {}
+    if not isinstance(data, dict):
+        return jsonify(message='Неверный формат запроса'), 400
+    if action == 'start':
+        if data.get('mounting_confirmed') is not True:
+            return jsonify(message='Подтвердите крепление камер и размеры доски'), 400
+        return jsonify(calibration_session.start(data.get('square_mm', 45.0)))
+    if action == 'observe':
+        rotation = data.get('rotation', 0)
+        if type(rotation) is not int or rotation not in range(4):
+            return jsonify(message='Недопустимый поворот сетки'), 400
+        return jsonify(calibration_session.observe(data.get('session_id'), rotation))
+    if action == 'capture':
+        return jsonify(calibration_session.save_pair(
+            data.get('session_id'), data.get('observation_id'),
+            data.get('validation') is True, data.get('orientation_confirmed'),
+        ))
+    if action == 'calculate':
+        return jsonify(calibration_session.calculate(data.get('session_id')))
+    if action == 'review':
+        return jsonify(calibration_session.review(data.get('session_id'), data.get('pair_index')))
+    if action == 'verify':
+        return jsonify(calibration_session.verify_observation(
+            data.get('session_id'), data.get('observation_id'), data.get('calibration_id'),
+            data.get('orientation_confirmed'), data.get('mounting_confirmed')))
+    if action == 'validate':
+        return jsonify(calibration_session.validate(data.get('session_id'), data.get('calibration_id'),
+            data.get('mounting_confirmed'), data.get('review_confirmed')))
+    if action == 'quality':
+        return jsonify(calibration_session.measure_quality(
+            data.get('session_id'), data.get('observation_id'), data.get('calibration_id'),
+            data.get('orientation_confirmed'), data.get('mounting_confirmed'), data.get('stationary')))
+    if action == 'face':
+        response = jsonify(calibration_session.measure_face(
+            data.get('session_id'), data.get('calibration_id'), data.get('mounting_confirmed'),
+            data.get('consent_confirmed'), data.get('sample_type'), data.get('lighting'), data.get('distance_cm'),
+            data.get('timing_confirmed')))
+        response.headers['Cache-Control'] = 'no-store'
+        return response
+    if action == 'timing':
+        return jsonify(calibration_session.measure_timing(data.get('session_id'), data.get('calibration_id'),
+            data.get('mounting_confirmed'), data.get('motion_confirmed'), data.get('rotation', 0)))
+    if action == 'finish':
+        return jsonify(calibration_session.finish(data.get('session_id')))
+    return jsonify(message='Неизвестная команда'), 404
 
 
 @app.route('/api/cameras/status', methods=['GET'])
 def camera_status():
     """Возвращает безопасную телеметрию камер без кадров и device paths"""
-    return jsonify(get_public_camera_status())
+    status = get_public_camera_status()
+    status['preview_available'] = calibration_session.active and maintenance.requested.is_set()
+    return jsonify(status)
+
+
+def maintenance_preview(view):
+    @wraps(view)
+    def protected(*args, **kwargs):
+        # HTTPS и права администратора уже проверены в protect_api
+        # Не ставим JPEG в очередь за долгим расчётом калибровки
+        if not calibration_session.lock.acquire(blocking=False):
+            return jsonify(message='Обслуживание занято, повторите запрос позже'), 409
+        try:
+            if not calibration_session.active or not maintenance.requested.is_set():
+                return jsonify(message='Кадры доступны только в режиме обслуживания камер'), 403
+            if frame_preview_limit.retry_after() > 0:
+                response = jsonify(message='Превышена частота получения кадров')
+                response.status_code = 429
+                response.headers['Retry-After'] = '1'
+                return response
+            # finish использует тот же lock: режим не завершится посреди подготовки кадра
+            return view(*args, **kwargs)
+        finally:
+            calibration_session.lock.release()
+    return protected
 
 
 @app.route('/api/cameras/<role>/frame', methods=['GET'])
+@maintenance_preview
 def camera_frame(role):
     """Возвращает свежий уменьшенный кадр камеры"""
     if role not in ('primary', 'secondary'):
@@ -37,6 +202,9 @@ def camera_frame(role):
         return jsonify({'status': 'error', 'message': 'Кадр не получен'}), 503
 
     image = frame.image
+    if role == 'primary' and request.args.get('haar') == '1':
+        face_detection_preview.enable()
+        image = face_detection_preview.render(frame)
     max_width = 640
     if image.shape[1] > max_width:
         scale = max_width / image.shape[1]
@@ -60,7 +228,11 @@ def authenticate():
     """API endpoint для аутентификации пользователя по лицу"""
     from utils.recognition import recognize_face_from_camera
     
-    is_authenticated, user_id, distance = recognize_face_from_camera()
+    try:
+        with maintenance.recognition():
+            is_authenticated, user_id, distance = recognize_face_from_camera()
+    except RuntimeError as error:
+        return jsonify(status='error', message=str(error)), 409
     
     if is_authenticated:
         # API подтверждает личность, но не управляет физическим замком
@@ -80,7 +252,11 @@ def authenticate():
 @app.route('/api/add_user', methods=['POST'])
 def add_user():
     name = request.args.get('name')
-    embeddings = create_embeddings_from_camera()
+    try:
+        with maintenance.recognition():
+            embeddings = create_embeddings_from_camera()
+    except RuntimeError as error:
+        return jsonify(status='error', message=str(error)), 409
         
     if embeddings:
         if len(embeddings) > 0:

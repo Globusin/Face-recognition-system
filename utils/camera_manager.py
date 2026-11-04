@@ -3,6 +3,7 @@ import json
 import os
 import threading
 import time
+import uuid
 from collections import deque
 from pathlib import Path
 
@@ -172,6 +173,7 @@ class CameraReader:
             read_started = time.perf_counter()
             success, image = self.capture.read()
             read_time_ms = (time.perf_counter() - read_started) * 1000
+            # Не подменяем неизвестный момент экспозиции временем доставки
             timestamp_ns = time.monotonic_ns()
 
             if not success or image is None:
@@ -256,6 +258,11 @@ class CameraReader:
 
     def get_status(self):
         actual_fps = 0.0
+        with self.condition:
+            recent = list(self.frames)
+        recent_fps = 0.0
+        if len(recent) > 1 and recent[-1].timestamp_ns > recent[0].timestamp_ns:
+            recent_fps = (len(recent) - 1) * 1e9 / (recent[-1].timestamp_ns - recent[0].timestamp_ns)
         if (
             self.frame_count > 1
             and self.first_timestamp_ns is not None
@@ -274,6 +281,8 @@ class CameraReader:
             'requested_fps': self.settings.get('fps'),
             'reported_fps': self.reported_fps,
             'actual_fps': actual_fps,
+            'recent_fps': recent_fps,
+            'timestamp_source': 'read_complete_monotonic',
             'frames': self.frame_count,
             'read_failures': self.read_failures,
             'average_read_ms': (
@@ -313,6 +322,7 @@ class CameraManager:
         self.sources = {}
         self.source_candidates = []
         self.started = False
+        self.run_id = None
         self.state_lock = threading.Lock()
         self.capture_lock = threading.Lock()
         self.lock_handle = None
@@ -339,6 +349,7 @@ class CameraManager:
                             raise
                         log_warning('Дополнительная камера недоступна')
 
+                self.run_id = uuid.uuid4().hex
                 self.started = True
                 log_info('Менеджер камер запущен')
             except Exception:
@@ -524,6 +535,8 @@ class CameraManager:
 
         return {
             'started': self.started,
+            'run_id': self.run_id,
+            'timestamp_source': 'read_complete_monotonic',
             'dual_mode_enabled': bool(self.dual_mode),
             'cameras': cameras,
             'pairing': self.pairer.get_metrics(),
@@ -565,6 +578,7 @@ def _public_status(status, source, updated_at=None):
             'reported_format': camera.get('reported_format'),
             'requested_fps': camera.get('requested_fps'),
             'actual_fps': camera.get('actual_fps', 0.0),
+            'recent_fps': camera.get('recent_fps'),
             'average_read_ms': camera.get('average_read_ms'),
             'max_read_ms': camera.get('max_read_ms'),
             'error': camera.get('error'),
@@ -574,6 +588,7 @@ def _public_status(status, source, updated_at=None):
     return {
         'status': 'success',
         'source': source,
+        'timestamp_source': status.get('timestamp_source', 'unknown'),
         'updated_at': updated_at,
         'dual_mode_enabled': status.get('dual_mode_enabled', False),
         'cameras': cameras,

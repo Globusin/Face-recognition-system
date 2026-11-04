@@ -13,6 +13,7 @@ from utils.lock_controller import initialize_lock_controller
 from utils.display import initialize_display, DisplayState
 from utils.config_loader import load_config
 from utils.logger import log_info, log_error, log_warning, log_debug
+from utils.maintenance import maintenance
 
 
 def safe_display_state(display, state: DisplayState, detail: str = None) -> None:
@@ -62,6 +63,7 @@ def run_monitoring(stop_event=None):
             if is_door_open and (current_time - last_success_time) >= door_open_time:
                 log_info("Автоматическое закрытие замка...")
                 lock_controller.lock()
+                maintenance.door_open.clear()
                 is_door_open = False
                 safe_display_state(display, DisplayState.STANDBY)
                 log_info("Замок закрыт")
@@ -71,18 +73,34 @@ def run_monitoring(stop_event=None):
                 wait_or_stop(stop_event, 0.5)
                 continue
 
+            if maintenance.requested.is_set():
+                state = DisplayState.CALIBRATING
+                if maintenance.stereo_measuring.is_set():
+                    state = DisplayState.STEREO_MEASURING
+                if maintenance.timing_measuring.is_set():
+                    state = DisplayState.TIMING_TEST
+                safe_display_state(display, state)
+                wait_or_stop(stop_event, 0.5)
+                continue
+
             try:
                 safe_display_state(display, DisplayState.STANDBY, "Подойдите\nк камере")
                 if not wait_for_face(
                     stop_event,
                     on_wait=lambda: safe_display_state(display, DisplayState.STANDBY),
+                    cancel_event=maintenance.requested,
                 ):
+                    if maintenance.requested.is_set():
+                        continue
                     break
 
                 log_debug("Лицо обнаружено, запускаем распознавание по серии кадров")
                 safe_display_state(display, DisplayState.CHECKING, "Распознавание\nлица")
-                is_authenticated, user_id, distance = recognize_face_from_camera()
+                with maintenance.recognition():
+                    is_authenticated, user_id, distance = recognize_face_from_camera()
             except Exception as e:
+                if maintenance.requested.is_set():
+                    continue
                 log_error(f"Ошибка при захвате или распознавании: {e}")
                 safe_display_state(display, DisplayState.ERROR, "Ошибка камеры\nили модели")
                 wait_or_stop(stop_event, detection_interval)
@@ -93,7 +111,13 @@ def run_monitoring(stop_event=None):
                 log_info(f"Пользователь распознан! Идентификатор: {user_id}, расстояние: {distance:.4f}")
 
                 log_info("Открытие замка...")
-                if lock_controller.unlock():
+                with maintenance.lock:
+                    if maintenance.requested.is_set():
+                        continue
+                    unlocked = lock_controller.unlock()
+                    if unlocked:
+                        maintenance.door_open.set()
+                if unlocked:
                     log_info("Замок успешно открыт (программная заглушка)")
                     is_door_open = True
                     last_success_time = time.monotonic()
@@ -130,6 +154,7 @@ def run_monitoring(stop_event=None):
         if is_door_open:
             log_info("Закрытие замка перед выходом...")
             lock_controller.lock()
+            maintenance.door_open.clear()
 
         safe_display_state(display, DisplayState.STANDBY, "Мониторинг\nостановлен")
         log_info("Мониторинг остановлен")
