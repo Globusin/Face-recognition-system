@@ -145,7 +145,8 @@ def calibration_action(action):
         response = jsonify(calibration_session.measure_face(
             data.get('session_id'), data.get('calibration_id'), data.get('mounting_confirmed'),
             data.get('consent_confirmed'), data.get('sample_type'), data.get('lighting'), data.get('distance_cm'),
-            data.get('timing_confirmed')))
+            data.get('timing_confirmed'), data.get('check_timing', False),
+            data.get('dense_depth', False), data.get('stationary_confirmed', False), data.get('series_id')))
         response.headers['Cache-Control'] = 'no-store'
         return response
     if action == 'timing':

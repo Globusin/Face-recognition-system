@@ -3,6 +3,30 @@
 import cv2
 import numpy as np
 import subprocess
+import time
+from contextlib import contextmanager
+
+
+@contextmanager
+def record_duration(durations, stage):
+    """Собирает длительности этапа, в том числе при ошибке внутри него"""
+    if durations is None:
+        yield
+        return
+    started = time.perf_counter()
+    try:
+        yield
+    finally:
+        durations.setdefault(stage, []).append((time.perf_counter() - started) * 1000)
+
+
+def summarize_durations(durations):
+    summary = {}
+    for stage, values in durations.items():
+        summary[stage] = dict(count=len(values), total_ms=float(sum(values)),
+                              mean_ms=float(np.mean(values)), max_ms=float(max(values)),
+                              p95_ms=float(np.percentile(values, 95)))
+    return summary
 
 
 def exposure_settings(manager):
@@ -19,7 +43,9 @@ def exposure_settings(manager):
             for line in result.stdout.splitlines():
                 name, separator, value = line.partition(':')
                 if separator:
-                    values[name.strip()] = int(value.strip())
+                    # Меню V4L2 может вернуть «1 (Manual Mode)» вместо одного числа
+                    number = value.strip().partition(' ')[0]
+                    values[name.strip()] = int(number)
             if set(values) != set(controls):
                 raise ValueError('Неполные настройки экспозиции')
         except (OSError, subprocess.SubprocessError, ValueError) as error:
