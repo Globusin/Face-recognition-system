@@ -371,15 +371,18 @@
                                             </div>
                                         </div>
                                     </div>
-                                    <h4 v-if="faceResult.dense_depth && faceResult.metrics" class="text-subtitle-1">Landmarks · 31 точка</h4>
+                                    <h4 v-if="faceResult.metrics" class="text-subtitle-1">Landmarks · 31 точка</h4>
                                     <div v-if="faceResult.metrics" class="calibration-metrics">
                                         <div v-for="metric in faceMetrics" :key="metric.label" class="d-flex flex-column ga-1">
                                             <span>{{ metric.label }}</span><strong>{{ metric.value }}</strong>
                                         </div>
                                     </div>
-                                    <template v-if="faceResult.dense_depth">
+                                    <template v-if="faceResult.dense_depth && faceResult.dense_depth.status !== 'not_requested'">
                                         <h4 class="text-subtitle-1">StereoSGBM · внутренняя область лица</h4>
-                                        <span>Пригодных пикселей: {{ (faceResult.dense_depth.valid_fraction * 100).toFixed(1) }} %</span>
+                                        <v-alert v-if="faceResult.dense_depth.status !== 'measured'" type="warning" variant="tonal">
+                                            Не измерено: {{ faceResult.dense_depth.reason }}
+                                        </v-alert>
+                                        <span v-if="Number.isFinite(faceResult.dense_depth.valid_fraction)">Пригодных пикселей: {{ (faceResult.dense_depth.valid_fraction * 100).toFixed(1) }} %</span>
                                         <div v-if="faceResult.dense_depth.metrics" class="calibration-metrics">
                                             <div><span>RMS отклонения от плоскости</span><strong class="d-block">{{ faceResult.dense_depth.metrics.plane_rms_mm.toFixed(2) }} мм</strong></div>
                                             <div><span>95-й перцентиль отклонения</span><strong class="d-block">{{ faceResult.dense_depth.metrics.plane_p95_mm.toFixed(2) }} мм</strong></div>
@@ -481,9 +484,9 @@ export default {
         },
         faceSeriesSummary() {
             if (!this.faceSeriesResults.length) return [];
-            return [['Глубина', 'mean_depth_mm'], ['RMS плоскости', 'plane_rms_mm'],
+            return [['Глубина · 31 точка', 'mean_depth_mm'], ['RMS плоскости · 31 точка', 'plane_rms_mm'],
                 ['Разность носа и глаз', 'nose_eye_plane_difference_mm']].map(([label, key]) => {
-                const values = this.faceSeriesResults.map(item => item.dense_depth.metrics[key]);
+                const values = this.faceSeriesResults.map(item => item.metrics[key]);
                 const mean = values.reduce((sum, value) => sum + value, 0) / values.length;
                 const variance = values.reduce((sum, value) => sum + (value - mean) ** 2, 0);
                 return { label, mean: mean.toFixed(2),
@@ -611,10 +614,12 @@ export default {
                     if (this.faceStopRequested || !data) break;
                     this.faceResult = data;
                     this.faceAttemptReports.push({ report_id: data.report_id, status: data.status,
-                        reason: data.reason, delta_ms: data.delta_ms });
+                        reason: data.reason, delta_ms: data.delta_ms,
+                        sparse_geometry: data.sparse_geometry,
+                        dense_depth: data.dense_depth });
                     if (data.status === 'measured') {
                         if (!this.denseDepth) break;
-                        if (data.dense_depth?.status !== 'measured') {
+                        if (!data.dense_depth) {
                             this.error = 'Backend не вернул карту StereoSGBM. Синхронизируйте файлы и перезапустите backend';
                             break;
                         }

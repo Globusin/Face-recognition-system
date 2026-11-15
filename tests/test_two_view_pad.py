@@ -175,6 +175,32 @@ class StereoFaceTests(unittest.TestCase):
         self.assertTrue(result['previews']['primary'].startswith('data:image/jpeg;base64,'))
         self.assertFalse(self.pair.primary.image.any())
 
+    def test_dense_failure_preserves_sparse_measurement(self):
+        for raises in (False, True):
+            with self.subTest(raises=raises), \
+                    patch('utils.two_view_pad.extract_face_points', side_effect=self.project()), \
+                    patch('utils.dense_stereo.measure_dense_depth',
+                          return_value=({'status': 'not_measurable', 'reason': 'Мало пикселей'}, {}),
+                          side_effect=ValueError('Мало пикселей') if raises else None):
+                result = inspect_pair(self.pair, self.arrays, [1280, 720], DEFAULT_LIMITS,
+                                      static_diagnostic=True, dense_depth=True)
+            self.assertEqual(result['status'], 'measured')
+            self.assertEqual(result['sparse_geometry']['status'], 'measured')
+            self.assertEqual(result['sparse_geometry']['metrics'], result['metrics'])
+            self.assertEqual(result['dense_depth']['status'], 'not_measurable')
+            self.assertEqual(result['dense_depth']['reason'], 'Мало пикселей')
+            self.assertFalse(result['retryable'])
+            self.assertFalse(result['access_granted'])
+
+    def test_sparse_failure_does_not_run_dense(self):
+        with patch('utils.two_view_pad.extract_face_points', side_effect=ValueError('Нет лица')), \
+                patch('utils.dense_stereo.measure_dense_depth') as dense:
+            result = inspect_pair(self.pair, self.arrays, [1280, 720], DEFAULT_LIMITS,
+                                  static_diagnostic=True, dense_depth=True)
+        dense.assert_not_called()
+        self.assertEqual(result['sparse_geometry']['reason'], 'Нет лица')
+        self.assertEqual(result['dense_depth']['status'], 'not_measurable')
+
     def test_vertical_failure_keeps_diagnostics_and_both_previews(self):
         primary, secondary = self.project()
         secondary[14, 1] += 20
@@ -222,6 +248,7 @@ class StereoFaceTests(unittest.TestCase):
         session = CalibrationSession()
         session.active, session.session_id = True, 'test-session'
         manager = SimpleNamespace(start=lambda **kwargs: None,
+                                  sources={'primary': 0, 'secondary': 2},
                                   get_status=lambda: {'pairing': {'paired_frames': 8 if duplicate_pair else 7},
                                       'cameras': {'primary': {'actual_fps': 19.1}, 'secondary': {'actual_fps': 8.8}}},
                                   get_pair=lambda **kwargs: None if missing_pair else self.pair)
@@ -236,6 +263,7 @@ class StereoFaceTests(unittest.TestCase):
                              side_effect=ValueError('Нет профиля времени') if timing_failure else None) as timing_context, \
                 patch('utils.stereo_timing.check_timing_profile'), \
                 patch('utils.stereo_timing.exposure_settings', return_value=None), \
+                patch('utils.stereo_timing.exposure_snapshot', return_value={'test': 'exposure'}), \
                 patch('utils.stereo_timing.timing_depth_uncertainty', return_value={}), \
                 patch('utils.dense_stereo.measure_dense_depth', return_value=(
                     {'status': 'measured', 'metrics': {'plane_rms_mm': 1}}, {'dense_depth': 'data:image/jpeg;base64,test'})), \
@@ -251,6 +279,7 @@ class StereoFaceTests(unittest.TestCase):
             failed = missing_pair or duplicate_pair or vertical_failure or timing_failure
             self.assertEqual(report['status'], 'not_measurable' if failed else 'measured')
             self.assertEqual(report['decision'], 'not_evaluated')
+            self.assertEqual(report['exposure_snapshot'], {'test': 'exposure'})
             self.assertEqual(report['limits']['max_delta_ms'], 10 if check_timing else 80)
             if dense_depth:
                 self.assertEqual(report['series_id'], 'b' * 32)

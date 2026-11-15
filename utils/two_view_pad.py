@@ -182,6 +182,8 @@ def inspect_pair(pair, arrays, image_size, limits, temporal_context=None, *, sta
     diagnostics = {}
     retryable_failure = True
     dense_previews = {}
+    sparse = dict(status='not_measurable')
+    dense = dict(status='not_measurable', reason='Не получена корректная геометрия по 31 точке') if dense_depth else dict(status='not_requested')
     try:
         frames = (pair.primary, pair.secondary)
         now = time.monotonic_ns()
@@ -206,17 +208,23 @@ def inspect_pair(pair, arrays, image_size, limits, temporal_context=None, *, sta
                                                   temporal_context['profile'], arrays, limits)
             metrics.update(uncertainty)
         result = dict(status='measured', metrics=metrics, retryable=False)
+        sparse = dict(status='measured', metrics=metrics)
         if dense_depth:
             if not static_diagnostic:
                 raise ValueError('StereoSGBM доступен только в статическом эксперименте')
             from utils.dense_stereo import measure_dense_depth
-            dense, dense_previews = measure_dense_depth(pair, arrays, points, limits)
-            result['dense_depth'] = dense
-            if dense['status'] != 'measured':
-                result.update(status='not_measurable', reason=dense['reason'], retryable=True)
+            # Отказ плотной карты не отменяет проверенную разреженную геометрию
+            try:
+                dense, dense_previews = measure_dense_depth(pair, arrays, points, limits)
+            except (ValueError, RuntimeError, ImportError, cv2.error) as error:
+                dense = dict(status='not_measurable', reason=str(error))
     except (ValueError, RuntimeError, ImportError, cv2.error) as error:
         result = dict(status='not_measurable', reason=str(error),
                       retryable=retryable_failure and not isinstance(error, ImportError))
+        sparse = dict(status='not_measurable', reason=str(error))
+
+    result['sparse_geometry'] = sparse
+    result['dense_depth'] = dense
 
     if diagnostics:
         result['diagnostics'] = diagnostics

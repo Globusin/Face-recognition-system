@@ -1015,7 +1015,18 @@ class CalibrationSession:
             report['actual_fps'] = {role: camera_status.get(role, {}).get('actual_fps')
                                     for role in ('primary', 'secondary')}
 
+            # Ошибки получения пары тоже имеют отдельные статусы обоих методов
+            if report['status'] != 'measured':
+                report['sparse_geometry'] = dict(status='not_measurable', reason=report.get('reason'))
+            report.setdefault('dense_depth', dict(
+                status='not_measurable' if dense_depth else 'not_requested',
+                reason='Не получена корректная пара для измерения' if dense_depth else None))
+
             report['elapsed_seconds'] = time.perf_counter() - started
+            # Читаем после обработки, чтобы не задерживать выбранную пару кадров
+            # Это состояние драйвера, не подтверждённая выдержка конкретного кадра
+            from utils.stereo_timing import exposure_snapshot
+            report['exposure_snapshot'] = exposure_snapshot(manager)
             folder = self._session_folder() / 'stereo_pad_checks'
             folder.mkdir(parents=True, exist_ok=True)
             write_json(folder / f'{report_id}.json', report)

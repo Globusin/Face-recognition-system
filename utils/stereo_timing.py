@@ -29,25 +29,44 @@ def summarize_durations(durations):
     return summary
 
 
+def read_exposure_controls(source):
+    """Читает настройки одной камеры, разрешая автоматическую экспозицию"""
+    controls = ('auto_exposure', 'exposure_time_absolute', 'exposure_dynamic_framerate')
+    if source is None:
+        raise ValueError('Не указан источник камеры')
+    device = f'/dev/video{source}' if isinstance(source, int) else str(source)
+    result = subprocess.run(['v4l2-ctl', '--device', device, '--get-ctrl=' + ','.join(controls)],
+                            capture_output=True, text=True, timeout=2, check=True)
+    values = {}
+    for line in result.stdout.splitlines():
+        name, separator, value = line.partition(':')
+        if separator:
+            # Меню может вернуть «3 (Aperture Priority Mode)» вместо числа
+            values[name.strip()] = int(value.strip().partition(' ')[0])
+    if set(values) != set(controls):
+        raise ValueError('Неполные настройки экспозиции')
+    return values
+
+
+def exposure_snapshot(manager):
+    """Недоступные настройки не блокируют статическое измерение"""
+    snapshot = dict(source='v4l2_controls', captured_at_monotonic_ns=time.monotonic_ns(),
+                    frame_exposure_verified=False, exposure_time_unit='100_us', cameras={})
+    for role in ('primary', 'secondary'):
+        try:
+            values = read_exposure_controls(manager.sources.get(role))
+            snapshot['cameras'][role] = dict(status='available', controls=values)
+        except (OSError, subprocess.SubprocessError, ValueError) as error:
+            snapshot['cameras'][role] = dict(status='unavailable', reason=str(error))
+    return snapshot
+
+
 def exposure_settings(manager):
     """Только чтение настроек V4L2, без автоматического изменения камер"""
-    controls = ('auto_exposure', 'exposure_time_absolute', 'exposure_dynamic_framerate')
     settings = {}
     for role in ('primary', 'secondary'):
-        source = manager.sources.get(role)
-        device = f'/dev/video{source}' if isinstance(source, int) else str(source)
         try:
-            result = subprocess.run(['v4l2-ctl', '--device', device, '--get-ctrl=' + ','.join(controls)],
-                                    capture_output=True, text=True, timeout=2, check=True)
-            values = {}
-            for line in result.stdout.splitlines():
-                name, separator, value = line.partition(':')
-                if separator:
-                    # Меню V4L2 может вернуть «1 (Manual Mode)» вместо одного числа
-                    number = value.strip().partition(' ')[0]
-                    values[name.strip()] = int(number)
-            if set(values) != set(controls):
-                raise ValueError('Неполные настройки экспозиции')
+            values = read_exposure_controls(manager.sources.get(role))
         except (OSError, subprocess.SubprocessError, ValueError) as error:
             raise ValueError(f'Не удалось проверить экспозицию {role}; нужны доступные V4L2 controls') from error
         if values['auto_exposure'] != 1 or values['exposure_dynamic_framerate'] != 0 or values['exposure_time_absolute'] <= 0:

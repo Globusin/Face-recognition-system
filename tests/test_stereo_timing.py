@@ -15,10 +15,31 @@ from utils.stereo_timing import estimate_timing, timing_depth_uncertainty, check
 from utils.two_view_pad import DEFAULT_LIMITS, inspect_pair
 from utils.stereo_calibration import CalibrationSession
 from utils.maintenance import maintenance
-from utils.stereo_timing import record_duration, summarize_durations
+from utils.stereo_timing import record_duration, summarize_durations, exposure_snapshot
 
 
 class StereoTimingTests(unittest.TestCase):
+    def test_snapshot_accepts_auto_and_keeps_other_camera_on_failure(self):
+        manager = SimpleNamespace(sources={'primary': 0, 'secondary': '/dev/video2'})
+        output = ('auto_exposure: 3 (Aperture Priority Mode)\n'
+                  'exposure_time_absolute: 300\nexposure_dynamic_framerate: 1\n')
+        with patch('utils.stereo_timing.subprocess.run', side_effect=[
+                SimpleNamespace(stdout=output), subprocess.TimeoutExpired('v4l2-ctl', 2)]) as run:
+            result = exposure_snapshot(manager)
+        self.assertEqual(result['cameras']['primary']['controls']['auto_exposure'], 3)
+        self.assertEqual(result['cameras']['primary']['controls']['exposure_dynamic_framerate'], 1)
+        self.assertEqual(result['cameras']['secondary']['status'], 'unavailable')
+        self.assertFalse(result['frame_exposure_verified'])
+        self.assertEqual(result['exposure_time_unit'], '100_us')
+        self.assertEqual(run.call_count, 2)
+        self.assertTrue(all('--get-ctrl=' in call.args[0][-1] for call in run.call_args_list))
+
+    def test_snapshot_missing_v4l2_does_not_raise(self):
+        manager = SimpleNamespace(sources={'primary': 0, 'secondary': 2})
+        with patch('utils.stereo_timing.subprocess.run', side_effect=FileNotFoundError('v4l2-ctl')):
+            result = exposure_snapshot(manager)
+        self.assertTrue(all(camera['status'] == 'unavailable' for camera in result['cameras'].values()))
+
     def test_performance_summary_and_failed_stage(self):
         durations = {}
         with patch('utils.stereo_timing.time.perf_counter', side_effect=[10.0, 10.01]):
