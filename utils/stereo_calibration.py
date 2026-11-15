@@ -18,24 +18,42 @@ from utils.config_loader import load_config
 from utils.maintenance import maintenance
 from utils.logger import log_info
 from utils.calibration_quality import measure_planarity, measure_depth_stability
+from utils.stereo_timing import record_duration, summarize_durations
 
 
 BOARD = (7, 7)
 SQUARE_MM = 45.0
 
 
-def find_board(image, rotation=0):
+def find_board(image, rotation=0, *, max_search_width=None, durations=None, stage_prefix='board'):
     gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
-    found, corners = cv2.findChessboardCorners(
-        gray, BOARD, cv2.CALIB_CB_ADAPTIVE_THRESH | cv2.CALIB_CB_NORMALIZE_IMAGE,
-    )
-    if not found:
-        return None
+    flags = cv2.CALIB_CB_ADAPTIVE_THRESH | cv2.CALIB_CB_NORMALIZE_IMAGE
+    corners = None
+    height, width = gray.shape
 
-    corners = cv2.cornerSubPix(
-        gray, corners, (11, 11), (-1, -1),
-        (cv2.TERM_CRITERIA_EPS | cv2.TERM_CRITERIA_MAX_ITER, 30, 0.001),
-    )
+    if max_search_width is not None and width > max_search_width:
+        search_height = max(1, round(height * max_search_width / width))
+        reduced = cv2.resize(gray, (max_search_width, search_height), interpolation=cv2.INTER_AREA)
+        with record_duration(durations, stage_prefix + '_search_reduced'):
+            found, candidate = cv2.findChessboardCorners(reduced, BOARD, flags)
+        if found:
+            # Масштаб по осям считаем отдельно из-за округления высоты
+            corners = candidate.copy()
+            corners[:, :, 0] *= width / max_search_width
+            corners[:, :, 1] *= height / search_height
+
+    if corners is None:
+        with record_duration(durations, stage_prefix + '_search_full'):
+            found, corners = cv2.findChessboardCorners(gray, BOARD, flags)
+        if not found:
+            return None
+
+    # Геометрия всегда уточняется на исходном изображении, не на уменьшенном
+    with record_duration(durations, stage_prefix + '_refine_full'):
+        corners = cv2.cornerSubPix(
+            gray, corners, (11, 11), (-1, -1),
+            (cv2.TERM_CRITERIA_EPS | cv2.TERM_CRITERIA_MAX_ITER, 30, 0.001),
+        )
 
     return np.ascontiguousarray(np.rot90(corners.reshape(7, 7, 2), rotation).reshape(-1, 1, 2))
 
@@ -368,7 +386,7 @@ class CalibrationSession:
             for role in ('primary', 'secondary')
         }
 
-    def observe(self, session_id, rotation, prepare_preview=True):
+    def observe(self, session_id, rotation, prepare_preview=True, durations=None, max_search_width=None):
         with self.lock:
             self.require_session(session_id)
             self.observation = None
@@ -376,7 +394,8 @@ class CalibrationSession:
             manager = get_camera_manager()
             manager.start(require_secondary=True)
             after = manager.get_status()['pairing']['paired_frames']
-            pair = manager.get_pair(after_number=after, timeout=3)
+            with record_duration(durations, 'pair_wait'):
+                pair = manager.get_pair(after_number=after, timeout=3)
 
             if pair is None:
                 raise ValueError('Нет свежей пары кадров')
@@ -395,8 +414,12 @@ class CalibrationSession:
                 raise ValueError('Режим камер изменился, начните новую сессию')
 
             self.signature, self.image_size = signature, sizes[0]
-            corners = {role: find_board(image, rotation if role == 'secondary' else 0)
-                       for role, image in images.items()}
+            corners = {}
+            for role, image in images.items():
+                with record_duration(durations, 'board_detection_' + role):
+                    corners[role] = find_board(image, rotation if role == 'secondary' else 0,
+                                              max_search_width=max_search_width, durations=durations,
+                                              stage_prefix='board_' + role)
 
             observation_id = uuid.uuid4().hex
             self.observation = dict(id=observation_id, created=time.monotonic(), pair=pair,
@@ -782,6 +805,14 @@ class CalibrationSession:
                     or any(char not in '0123456789abcdef' for char in calibration_id)):
                 raise ValueError('Неверный номер калибровки')
             self.timing_result = None
+            timing_settings = load_config().get('stereo_calibration', {})
+            fast_board = timing_settings.get('timing_fast_board', True)
+            if type(fast_board) is not bool:
+                raise ValueError('timing_fast_board должен быть true или false')
+            search_width = timing_settings.get('timing_detection_width', 640)
+            if type(search_width) is not int or not 160 <= search_width <= 1280:
+                raise ValueError('timing_detection_width должен быть целым числом от 160 до 1280')
+            max_search_width = search_width if fast_board else None
             manager = get_camera_manager()
             manager.start(require_secondary=True)
             signature = self._camera_signature(manager)
@@ -791,26 +822,41 @@ class CalibrationSession:
             samples = {'primary': [], 'secondary': []}
             started = time.monotonic()
             sequences = {'primary': -1, 'secondary': -1}
+            durations = {}
+            attempted_iterations = 0
+            completed_iterations = 0
+            board_found = {'primary': 0, 'secondary': 0}
+            board_missing = {'primary': 0, 'secondary': 0}
+            pairing_before = manager.get_status().get('pairing', {}).copy()
             report = dict(version=1, algorithm='moving_board_vertical_v1', calibration_id=calibration_id,
                           status='not_measurable', run_id=manager.get_status().get('run_id'),
                           fingerprint=metadata['validation']['fingerprint'], samples=samples,
                           timestamp_source='read_complete_monotonic', hardware_synchronized=False,
                           created_at=datetime.now(timezone.utc).isoformat())
+            report['board_detection'] = dict(fast_enabled=fast_board, max_search_width=max_search_width,
+                                             refinement='original_resolution', full_search_fallback=True)
             maintenance.timing_measuring.set()
             try:
                 report['exposure_controls'] = exposure_settings(manager)
                 while time.monotonic() - started < 20:
-                    self.observe(session_id, rotation, prepare_preview=False)
-                    observation = self.observation
-                    for role, suffix in (('primary', '1'), ('secondary', '2')):
-                        frame = getattr(observation['pair'], role)
-                        if frame.sequence <= sequences[role]:
-                            raise ValueError('Повторный кадр в тесте времени')
-                        sequences[role] = frame.sequence
-                        corners = observation['corners'][role]
-                        if corners is not None:
+                    attempted_iterations += 1
+                    with record_duration(durations, 'iteration'):
+                        self.observe(session_id, rotation, prepare_preview=False, durations=durations,
+                                     max_search_width=max_search_width)
+                        observation = self.observation
+                        for role, suffix in (('primary', '1'), ('secondary', '2')):
+                            frame = getattr(observation['pair'], role)
+                            if frame.sequence <= sequences[role]:
+                                raise ValueError('Повторный кадр в тесте времени')
+                            sequences[role] = frame.sequence
+                            corners = observation['corners'][role]
+                            if corners is None:
+                                board_missing[role] += 1
+                                continue
+                            board_found[role] += 1
                             rectified = rectified_points(corners, arrays, suffix)
                             samples[role].append([frame.timestamp_ns / 1e9, float(rectified[:, 1].mean())])
+                        completed_iterations += 1
                 if self._camera_signature(manager) != signature:
                     raise ValueError('Режим камер изменился во время теста')
                 if exposure_settings(manager) != report['exposure_controls']:
@@ -825,12 +871,23 @@ class CalibrationSession:
             finally:
                 maintenance.timing_measuring.clear()
                 self.observation = None
+                pairing_after = manager.get_status().get('pairing', {})
+                pairing_delta = {}
+                for key in ('paired_frames', 'dropped_primary', 'dropped_secondary'):
+                    before, after = pairing_before.get(key), pairing_after.get(key)
+                    # Неизвестные счётчики не подменяем нулями
+                    pairing_delta[key] = after - before if before is not None and after is not None else None
+                report['performance'] = dict(
+                    stages=summarize_durations(durations), attempted_iterations=attempted_iterations,
+                    completed_iterations=completed_iterations, board_found=board_found,
+                    board_missing=board_missing, pairing_counter_delta=pairing_delta)
             report['elapsed_seconds'] = time.monotonic() - started
             report['report_id'] = uuid.uuid4().hex
             folder = self._session_folder() / 'timing_checks'
             folder.mkdir(parents=True, exist_ok=True)
             write_json(folder / f'{report["report_id"]}.json', report)
             log_info(f'Тест времени: {report["status"]}, отчёт {report["report_id"]}')
+            log_info(f'Тест времени: профиль этапов {json.dumps(report["performance"], ensure_ascii=False)}')
             return report
 
     def _timing_context(self, manager, calibration_id, metadata, arrays, limits, confirmed):
@@ -852,11 +909,21 @@ class CalibrationSession:
         return dict(previous=previous, profile=self.timing_result)
 
     def measure_face(self, session_id, calibration_id, mounting_confirmed, consent_confirmed,
-                     sample_type, lighting, distance_cm, timing_confirmed=False):
+                     sample_type, lighting, distance_cm, timing_confirmed=False, check_timing=False,
+                     dense_depth=False, stationary_confirmed=False, series_id=None):
         from utils.two_view_pad import inspect_pair, measurement_limits, wait_for_measurement_pair
 
         with self.lock:
             self.require_session(session_id)
+            if type(check_timing) is not bool:
+                raise ValueError('Режим проверки времени должен быть true или false')
+            if type(dense_depth) is not bool:
+                raise ValueError('Режим StereoSGBM должен быть true или false')
+            if dense_depth and (check_timing or stationary_confirmed is not True):
+                raise ValueError('Для StereoSGBM подтвердите неподвижность в статическом режиме')
+            if series_id is not None and (not isinstance(series_id, str) or len(series_id) != 32
+                                         or any(char not in '0123456789abcdef' for char in series_id)):
+                raise ValueError('Неверный номер серии')
             if consent_confirmed is not True or mounting_confirmed is not True:
                 raise ValueError('Подтвердите согласие на опыт и неизменность камер')
             if (not isinstance(calibration_id, str) or len(calibration_id) != 32
@@ -871,6 +938,8 @@ class CalibrationSession:
                 raise ValueError('Укажите приблизительное расстояние в сантиметрах')
 
             limits = measurement_limits(load_config().get('stereo_pad', {}))
+            if not check_timing:
+                limits['max_delta_ms'] = limits['static_max_delta_ms']
             manager = get_camera_manager()
             manager.start(require_secondary=True)
             signature = self._camera_signature(manager)
@@ -882,7 +951,7 @@ class CalibrationSession:
             self.observation = None
             report_id = uuid.uuid4().hex
             started = time.perf_counter()
-            report = dict(version=1, algorithm='stereo_face_31_v1', report_id=report_id,
+            report = dict(version=1, algorithm='stereo_face_31_sgbm_v1' if dense_depth else 'stereo_face_31_v1', report_id=report_id,
                           session_id=session_id, calibration_id=calibration_id,
                           calibration_created_at=metadata.get('created_at'), cameras=signature,
                           created_at=datetime.now(timezone.utc).isoformat(), limits=limits,
@@ -890,17 +959,33 @@ class CalibrationSession:
                           status='not_measurable', decision='not_evaluated')
             report['timestamp_source'] = 'read_complete_monotonic'
             report['hardware_synchronized'] = False
+            report['diagnostic_only'] = True
+            report['access_granted'] = False
+            report['timing_verified'] = False
+            report['retryable'] = False
+            report['measurement_mode'] = 'timing_checked' if check_timing else 'static_diagnostic'
+            report['series_id'] = series_id
+            report['stationary_confirmed'] = stationary_confirmed is True
+            report['stationarity_verified'] = False
+            report['dense_depth_requested'] = dense_depth
+            report['calibration_fingerprint'] = metadata['validation']['fingerprint']
             maintenance.stereo_measuring.set()
             report['pair_selection'] = dict(checked_pairs=0, skipped_pairs=0,
                                              minimum_delta_ms=None, wait_seconds=0.0)
             try:
-                temporal = self._timing_context(manager, calibration_id, metadata, arrays, limits, timing_confirmed)
-                if temporal is None:
-                    raise ValueError('Не оценена временная точность камер')
+                retry_pair = False
+                temporal = None
+                if check_timing:
+                    temporal = self._timing_context(manager, calibration_id, metadata, arrays, limits, timing_confirmed)
+                    if temporal is None:
+                        raise ValueError('Не оценена временная точность камер')
+                retry_pair = True
                 pair = wait_for_measurement_pair(manager, limits, report['pair_selection'])
-                from utils.stereo_timing import check_timing_profile
-                check_timing_profile(temporal['profile'], calibration_id, metadata['validation']['fingerprint'],
-                                     manager.get_status(), time.monotonic(), timing_confirmed)
+                retry_pair = False
+                if check_timing:
+                    from utils.stereo_timing import check_timing_profile
+                    check_timing_profile(temporal['profile'], calibration_id, metadata['validation']['fingerprint'],
+                                         manager.get_status(), time.monotonic(), timing_confirmed)
                 if self._camera_signature(manager) != signature:
                     raise ValueError('Режим камер изменился во время опыта')
                 report.update(pair_number=pair.number, delta_ms=pair.delta_ms,
@@ -908,16 +993,19 @@ class CalibrationSession:
                               secondary_sequence=pair.secondary.sequence,
                               primary_timestamp_ns=pair.primary.timestamp_ns,
                               secondary_timestamp_ns=pair.secondary.timestamp_ns)
-                result = inspect_pair(pair, arrays, metadata['image_size'], limits, temporal_context=temporal)
+                result = inspect_pair(pair, arrays, metadata['image_size'], limits,
+                                      temporal_context=temporal, static_diagnostic=not check_timing,
+                                      dense_depth=dense_depth)
                 if temporal is not None:
                     report['timing_report_id'] = temporal['profile']['report_id']
-                from utils.stereo_timing import exposure_settings
-                if exposure_settings(manager) != temporal['profile'].get('exposure_controls'):
-                    result.pop('metrics', None)
-                    result.update(status='not_measurable', reason='Выдержка изменилась во время измерения лица')
+                    from utils.stereo_timing import exposure_settings
+                    if exposure_settings(manager) != temporal['profile'].get('exposure_controls'):
+                        result.pop('metrics', None)
+                        result.update(status='not_measurable', timing_verified=False, retryable=False,
+                                      reason='Выдержка изменилась во время измерения лица')
                 report.update({key: value for key, value in result.items() if key != 'previews'})
             except (ValueError, RuntimeError, cv2.error) as error:
-                result = dict(status='not_measurable', reason=str(error))
+                result = dict(status='not_measurable', reason=str(error), retryable=retry_pair)
                 report.update(result)
             finally:
                 maintenance.stereo_measuring.clear()
@@ -927,7 +1015,18 @@ class CalibrationSession:
             report['actual_fps'] = {role: camera_status.get(role, {}).get('actual_fps')
                                     for role in ('primary', 'secondary')}
 
+            # Ошибки получения пары тоже имеют отдельные статусы обоих методов
+            if report['status'] != 'measured':
+                report['sparse_geometry'] = dict(status='not_measurable', reason=report.get('reason'))
+            report.setdefault('dense_depth', dict(
+                status='not_measurable' if dense_depth else 'not_requested',
+                reason='Не получена корректная пара для измерения' if dense_depth else None))
+
             report['elapsed_seconds'] = time.perf_counter() - started
+            # Читаем после обработки, чтобы не задерживать выбранную пару кадров
+            # Это состояние драйвера, не подтверждённая выдержка конкретного кадра
+            from utils.stereo_timing import exposure_snapshot
+            report['exposure_snapshot'] = exposure_snapshot(manager)
             folder = self._session_folder() / 'stereo_pad_checks'
             folder.mkdir(parents=True, exist_ok=True)
             write_json(folder / f'{report_id}.json', report)

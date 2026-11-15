@@ -15,9 +15,68 @@ from utils.stereo_timing import estimate_timing, timing_depth_uncertainty, check
 from utils.two_view_pad import DEFAULT_LIMITS, inspect_pair
 from utils.stereo_calibration import CalibrationSession
 from utils.maintenance import maintenance
+from utils.stereo_timing import record_duration, summarize_durations, exposure_snapshot
 
 
 class StereoTimingTests(unittest.TestCase):
+    def test_snapshot_accepts_auto_and_keeps_other_camera_on_failure(self):
+        manager = SimpleNamespace(sources={'primary': 0, 'secondary': '/dev/video2'})
+        output = ('auto_exposure: 3 (Aperture Priority Mode)\n'
+                  'exposure_time_absolute: 300\nexposure_dynamic_framerate: 1\n')
+        with patch('utils.stereo_timing.subprocess.run', side_effect=[
+                SimpleNamespace(stdout=output), subprocess.TimeoutExpired('v4l2-ctl', 2)]) as run:
+            result = exposure_snapshot(manager)
+        self.assertEqual(result['cameras']['primary']['controls']['auto_exposure'], 3)
+        self.assertEqual(result['cameras']['primary']['controls']['exposure_dynamic_framerate'], 1)
+        self.assertEqual(result['cameras']['secondary']['status'], 'unavailable')
+        self.assertFalse(result['frame_exposure_verified'])
+        self.assertEqual(result['exposure_time_unit'], '100_us')
+        self.assertEqual(run.call_count, 2)
+        self.assertTrue(all('--get-ctrl=' in call.args[0][-1] for call in run.call_args_list))
+
+    def test_snapshot_missing_v4l2_does_not_raise(self):
+        manager = SimpleNamespace(sources={'primary': 0, 'secondary': 2})
+        with patch('utils.stereo_timing.subprocess.run', side_effect=FileNotFoundError('v4l2-ctl')):
+            result = exposure_snapshot(manager)
+        self.assertTrue(all(camera['status'] == 'unavailable' for camera in result['cameras'].values()))
+
+    def test_performance_summary_and_failed_stage(self):
+        durations = {}
+        with patch('utils.stereo_timing.time.perf_counter', side_effect=[10.0, 10.01]):
+            with self.assertRaises(ValueError):
+                with record_duration(durations, 'pair_wait'):
+                    raise ValueError('Нет пары')
+        self.assertAlmostEqual(durations['pair_wait'][0], 10)
+        summary = summarize_durations({'example': [10, 20, 30]})['example']
+        self.assertEqual(summary['count'], 3)
+        self.assertEqual(summary['total_ms'], 60)
+        self.assertEqual(summary['mean_ms'], 20)
+        self.assertEqual(summary['max_ms'], 30)
+        self.assertAlmostEqual(summary['p95_ms'], 29)
+        self.assertEqual(summarize_durations({}), {})
+
+    def test_observe_records_pair_wait_and_each_detector(self):
+        import time
+        from unittest.mock import Mock
+        session = CalibrationSession()
+        session.active, session.session_id = True, 'test'
+        image = np.zeros((40, 40, 3), dtype=np.uint8)
+        frame = CameraFrame('primary', 1, time.monotonic_ns(), image)
+        pair = FramePair(1, frame, frame, 0)
+        manager = Mock(cameras_config={})
+        manager.get_status.return_value = {'pairing': {'paired_frames': 0}}
+        manager.get_pair.return_value = pair
+        durations = {}
+        with patch('utils.stereo_calibration.get_camera_manager', return_value=manager), \
+                patch.object(session, '_camera_signature', return_value={}), \
+                patch('utils.stereo_calibration.find_board', side_effect=[np.zeros((49, 1, 2)), None]):
+            result = session.observe('test', 0, prepare_preview=False, durations=durations)
+        self.assertEqual(result['found'], {'primary': True, 'secondary': False})
+        self.assertEqual(set(durations), {'pair_wait', 'board_detection_primary', 'board_detection_secondary'})
+        for values in durations.values():
+            self.assertEqual(len(values), 1)
+            self.assertGreaterEqual(values[0], 0)
+
     def samples(self, step=.04):
         times = np.arange(0, 15, step)
         values = 100 + 35 * np.sin(times * 1.8) + 18 * np.sin(times * 4.1) + 10 * np.sin(.17 * times ** 2)
@@ -137,13 +196,24 @@ class StereoTimingTests(unittest.TestCase):
             with self.assertRaises(ValueError):
                 exposure_settings(manager)
 
+    def test_exposure_menu_descriptions_are_parsed(self):
+        manager = SimpleNamespace(sources={'primary': '/dev/test-primary', 'secondary': '/dev/test-secondary'})
+        controls = 'auto_exposure: 1 (Manual Mode)\nexposure_time_absolute: 166\nexposure_dynamic_framerate: 0\n'
+        with patch('utils.stereo_timing.subprocess.run', return_value=SimpleNamespace(stdout=controls)):
+            self.assertEqual(exposure_settings(manager)['primary']['auto_exposure'], 1)
+        auto = controls.replace('1 (Manual Mode)', '3 (Aperture Priority Mode)')
+        with patch('utils.stereo_timing.subprocess.run', return_value=SimpleNamespace(stdout=auto)):
+            with self.assertRaisesRegex(ValueError, 'ручная выдержка'):
+                exposure_settings(manager)
+
     def test_probe_service_records_motion_or_failure_without_images(self):
-        for fail_exposure in (False, True):
+        for fail_exposure, fast_board in ((False, True), (False, False), (True, True)):
             session = CalibrationSession()
             session.active, session.session_id = True, 'test-session'
             clock = [100.0]
             image = np.zeros((20, 20, 3), np.uint8)
             def observe(*args, **kwargs):
+                self.assertEqual(kwargs['max_search_width'], 640 if fast_board else None)
                 clock[0] += .25
                 t = clock[0] - 100
                 y = 100 + 35 * np.sin(t * 1.8) + 18 * np.sin(t * 4.1) + 10 * np.sin(.17 * t ** 2)
@@ -152,7 +222,12 @@ class StereoTimingTests(unittest.TestCase):
                 pair = FramePair(number, CameraFrame('primary', number, int(clock[0] * 1e9), image),
                     CameraFrame('secondary', number, int((clock[0] + .07) * 1e9), image), 70)
                 session.observation = dict(pair=pair, corners={'primary': corners, 'secondary': corners})
-            status = dict(run_id='run', cameras={role: {'recent_fps': 30} for role in ('primary', 'secondary')})
+                status['pairing']['paired_frames'] += 2
+                status['pairing']['dropped_primary'] += 1
+                if number == 4:
+                    session.observation['corners']['secondary'] = None
+            status = dict(run_id='run', cameras={role: {'recent_fps': 30} for role in ('primary', 'secondary')},
+                          pairing=dict(paired_frames=10, dropped_primary=2, dropped_secondary=3))
             manager = SimpleNamespace(start=lambda **kwargs: None, get_status=lambda: status)
             arrays = {'P1': np.eye(3, 4), 'P2': np.eye(3, 4)}
             with tempfile.TemporaryDirectory() as root, \
@@ -160,6 +235,8 @@ class StereoTimingTests(unittest.TestCase):
                     patch.object(session, '_camera_signature', return_value={'test': 'camera'}), \
                     patch.object(session, 'observe', side_effect=observe), \
                     patch('utils.stereo_calibration.get_camera_manager', return_value=manager), \
+                    patch('utils.stereo_calibration.load_config', return_value={
+                        'stereo_calibration': {'timing_fast_board': fast_board, 'timing_detection_width': 640}}), \
                     patch('utils.stereo_calibration.load_calibration', return_value=({'validation': {'fingerprint': 'hash'}}, arrays)), \
                     patch('utils.stereo_calibration.time.monotonic', side_effect=lambda: clock[0]), \
                     patch('utils.stereo_timing.rectified_points', side_effect=lambda points, *args: points[:, 0]), \
@@ -171,10 +248,21 @@ class StereoTimingTests(unittest.TestCase):
                 self.assertNotIn('images', saved)
                 self.assertFalse(saved['hardware_synchronized'])
                 self.assertFalse(maintenance.timing_measuring.is_set())
+                performance = saved['performance']
+                self.assertEqual(saved['board_detection']['fast_enabled'], fast_board)
                 if fail_exposure:
                     self.assertIsNone(session.timing_result)
+                    self.assertEqual(performance['attempted_iterations'], 0)
+                    self.assertEqual(performance['stages'], {})
                 else:
                     self.assertAlmostEqual(result['estimate']['offset_ms'], -70, delta=2)
+                    self.assertEqual(performance['completed_iterations'], len(saved['samples']['primary']))
+                    self.assertEqual(performance['board_found']['primary'], performance['completed_iterations'])
+                    self.assertEqual(performance['board_missing']['secondary'], 1)
+                    self.assertEqual(performance['stages']['iteration']['count'], performance['completed_iterations'])
+                    self.assertEqual(performance['pairing_counter_delta']['paired_frames'], 2 * performance['completed_iterations'])
+                    self.assertEqual(performance['pairing_counter_delta']['dropped_primary'], performance['completed_iterations'])
+                    self.assertEqual(performance['pairing_counter_delta']['dropped_secondary'], 0)
 
     def test_probe_without_confirmations_does_not_read_cameras(self):
         session = CalibrationSession()

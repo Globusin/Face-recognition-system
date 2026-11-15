@@ -13,7 +13,7 @@ LANDMARK_GROUPS = ('left_eyebrow', 'right_eyebrow', 'nose_bridge',
 GROUP_LENGTHS = (5, 5, 4, 5, 6, 6)
 GROUP_NAMES = ('левая бровь', 'правая бровь', 'переносица',
                'низ носа', 'левый глаз', 'правый глаз')
-DEFAULT_LIMITS = dict(max_delta_ms=10.0, max_vertical_px=8.0,
+DEFAULT_LIMITS = dict(max_delta_ms=10.0, static_max_delta_ms=80.0, max_vertical_px=8.0,
                       max_reprojection_px=4.0, min_disparity_px=1.0,
                       min_depth_mm=150.0, max_depth_mm=2000.0, pair_wait_seconds=5.0,
                       max_exposure_error_ms=30.0, max_image_speed_px_s=25.0, max_depth_uncertainty_mm=5.0)
@@ -174,12 +174,16 @@ def measure_face_geometry(primary, secondary, arrays, limits, diagnostics=None):
                 reprojection_max_px=float(max(reprojection)))
 
 
-def inspect_pair(pair, arrays, image_size, limits, temporal_context=None):
+def inspect_pair(pair, arrays, image_size, limits, temporal_context=None, *, static_diagnostic=False, dense_depth=False):
     """Одна программно согласованная пара, без повторного использования кадров"""
     started = time.perf_counter()
     images = {role: getattr(pair, role).image for role in ('primary', 'secondary')}
     points = {}
     diagnostics = {}
+    retryable_failure = True
+    dense_previews = {}
+    sparse = dict(status='not_measurable')
+    dense = dict(status='not_measurable', reason='Не получена корректная геометрия по 31 точке') if dense_depth else dict(status='not_requested')
     try:
         frames = (pair.primary, pair.secondary)
         now = time.monotonic_ns()
@@ -194,25 +198,48 @@ def inspect_pair(pair, arrays, image_size, limits, temporal_context=None):
 
         points = {role: extract_face_points(image) for role, image in images.items()}
         metrics = measure_face_geometry(points['primary'], points['secondary'], arrays, limits, diagnostics)
-        if temporal_context is None:
+        # Неисправный профиль времени не исправится новым положением лица
+        retryable_failure = False
+        if temporal_context is None and not static_diagnostic:
             raise ValueError('Не оценена временная точность камер')
-        from utils.stereo_timing import timing_depth_uncertainty
-        uncertainty = timing_depth_uncertainty(points, pair, temporal_context['previous'],
-                                              temporal_context['profile'], arrays, limits)
-        metrics.update(uncertainty)
-        result = dict(status='measured', metrics=metrics)
+        if not static_diagnostic:
+            from utils.stereo_timing import timing_depth_uncertainty
+            uncertainty = timing_depth_uncertainty(points, pair, temporal_context['previous'],
+                                                  temporal_context['profile'], arrays, limits)
+            metrics.update(uncertainty)
+        result = dict(status='measured', metrics=metrics, retryable=False)
+        sparse = dict(status='measured', metrics=metrics)
+        if dense_depth:
+            if not static_diagnostic:
+                raise ValueError('StereoSGBM доступен только в статическом эксперименте')
+            from utils.dense_stereo import measure_dense_depth
+            # Отказ плотной карты не отменяет проверенную разреженную геометрию
+            try:
+                dense, dense_previews = measure_dense_depth(pair, arrays, points, limits)
+            except (ValueError, RuntimeError, ImportError, cv2.error) as error:
+                dense = dict(status='not_measurable', reason=str(error))
     except (ValueError, RuntimeError, ImportError, cv2.error) as error:
-        result = dict(status='not_measurable', reason=str(error))
+        result = dict(status='not_measurable', reason=str(error),
+                      retryable=retryable_failure and not isinstance(error, ImportError))
+        sparse = dict(status='not_measurable', reason=str(error))
+
+    result['sparse_geometry'] = sparse
+    result['dense_depth'] = dense
 
     if diagnostics:
         result['diagnostics'] = diagnostics
     if len(points) == 2:
         try:
             result['previews'] = face_point_previews(images, points, diagnostics)
+            result['previews'].update(dense_previews)
         except (ValueError, cv2.error) as error:
             result['preview_error'] = str(error)
 
     result['elapsed_seconds'] = time.perf_counter() - started
+    result['diagnostic_only'] = True
+    result['decision'] = 'not_evaluated'
+    result['access_granted'] = False
+    result['timing_verified'] = not static_diagnostic and result['status'] == 'measured'
     return result
 
 

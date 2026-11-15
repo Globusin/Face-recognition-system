@@ -55,6 +55,13 @@ class CalibrationApiTests(unittest.TestCase):
                 self.assertEqual(response.json, result)
                 self.assertEqual(response.headers['Cache-Control'], 'no-store')
                 self.assertEqual(measure.call_args.args[4], 'print')
+                self.assertIs(measure.call_args.args[8], False)
+                self.client.post('/api/calibration/face', headers=self.header,
+                                 json={'check_timing': True, 'timing_confirmed': True})
+                self.assertEqual(measure.call_args.args[7:9], (True, True))
+                self.client.post('/api/calibration/face', headers=self.header, json={
+                    'dense_depth': True, 'stationary_confirmed': True, 'series_id': 'b' * 32})
+                self.assertEqual(measure.call_args.args[9:], (True, True, 'b' * 32))
 
     def test_stereo_measurement_has_its_own_tft_state(self):
         from utils.display import DisplayState

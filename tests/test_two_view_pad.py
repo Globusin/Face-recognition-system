@@ -175,6 +175,32 @@ class StereoFaceTests(unittest.TestCase):
         self.assertTrue(result['previews']['primary'].startswith('data:image/jpeg;base64,'))
         self.assertFalse(self.pair.primary.image.any())
 
+    def test_dense_failure_preserves_sparse_measurement(self):
+        for raises in (False, True):
+            with self.subTest(raises=raises), \
+                    patch('utils.two_view_pad.extract_face_points', side_effect=self.project()), \
+                    patch('utils.dense_stereo.measure_dense_depth',
+                          return_value=({'status': 'not_measurable', 'reason': 'Мало пикселей'}, {}),
+                          side_effect=ValueError('Мало пикселей') if raises else None):
+                result = inspect_pair(self.pair, self.arrays, [1280, 720], DEFAULT_LIMITS,
+                                      static_diagnostic=True, dense_depth=True)
+            self.assertEqual(result['status'], 'measured')
+            self.assertEqual(result['sparse_geometry']['status'], 'measured')
+            self.assertEqual(result['sparse_geometry']['metrics'], result['metrics'])
+            self.assertEqual(result['dense_depth']['status'], 'not_measurable')
+            self.assertEqual(result['dense_depth']['reason'], 'Мало пикселей')
+            self.assertFalse(result['retryable'])
+            self.assertFalse(result['access_granted'])
+
+    def test_sparse_failure_does_not_run_dense(self):
+        with patch('utils.two_view_pad.extract_face_points', side_effect=ValueError('Нет лица')), \
+                patch('utils.dense_stereo.measure_dense_depth') as dense:
+            result = inspect_pair(self.pair, self.arrays, [1280, 720], DEFAULT_LIMITS,
+                                  static_diagnostic=True, dense_depth=True)
+        dense.assert_not_called()
+        self.assertEqual(result['sparse_geometry']['reason'], 'Нет лица')
+        self.assertEqual(result['dense_depth']['status'], 'not_measurable')
+
     def test_vertical_failure_keeps_diagnostics_and_both_previews(self):
         primary, secondary = self.project()
         secondary[14, 1] += 20
@@ -217,10 +243,12 @@ class StereoFaceTests(unittest.TestCase):
         self.assertEqual(result['preview_error'], 'Ошибка JPEG')
         self.assertNotIn('previews', result)
 
-    def run_session(self, missing_pair=False, duplicate_pair=False, vertical_failure=False):
+    def run_session(self, missing_pair=False, duplicate_pair=False, vertical_failure=False,
+                    check_timing=False, timing_failure=False, dense_depth=False):
         session = CalibrationSession()
         session.active, session.session_id = True, 'test-session'
         manager = SimpleNamespace(start=lambda **kwargs: None,
+                                  sources={'primary': 0, 'secondary': 2},
                                   get_status=lambda: {'pairing': {'paired_frames': 8 if duplicate_pair else 7},
                                       'cameras': {'primary': {'actual_fps': 19.1}, 'secondary': {'actual_fps': 8.8}}},
                                   get_pair=lambda **kwargs: None if missing_pair else self.pair)
@@ -231,19 +259,44 @@ class StereoFaceTests(unittest.TestCase):
                 patch.object(session, '_root', return_value=Path(root)), \
                 patch.object(session, '_camera_signature', return_value={'test': 'camera'}), \
                 patch('utils.stereo_calibration.get_camera_manager', return_value=manager), \
-                patch.object(session, '_timing_context', return_value={'previous': {}, 'profile': {'report_id': 'mock'}}), \
+                patch.object(session, '_timing_context', return_value={'previous': {}, 'profile': {'report_id': 'mock'}},
+                             side_effect=ValueError('Нет профиля времени') if timing_failure else None) as timing_context, \
                 patch('utils.stereo_timing.check_timing_profile'), \
                 patch('utils.stereo_timing.exposure_settings', return_value=None), \
+                patch('utils.stereo_timing.exposure_snapshot', return_value={'test': 'exposure'}), \
                 patch('utils.stereo_timing.timing_depth_uncertainty', return_value={}), \
+                patch('utils.dense_stereo.measure_dense_depth', return_value=(
+                    {'status': 'measured', 'metrics': {'plane_rms_mm': 1}}, {'dense_depth': 'data:image/jpeg;base64,test'})), \
                 patch('utils.stereo_calibration.load_calibration',
                       return_value=({'units': 'mm', 'image_size': [1280, 720], 'validation': {'fingerprint': 'mock'}}, self.arrays)), \
                 patch('utils.two_view_pad.extract_face_points', side_effect=points):
-            result = session.measure_face('test-session', 'a' * 32, True, True, 'live', 'daylight', 65)
+            result = session.measure_face('test-session', 'a' * 32, True, True, 'live', 'daylight', 65,
+                                          timing_confirmed=check_timing, check_timing=check_timing,
+                                          dense_depth=dense_depth, stationary_confirmed=dense_depth,
+                                          series_id='b' * 32 if dense_depth else None)
             report_path = next((Path(root) / 'test-session' / 'stereo_pad_checks').glob('*.json'))
             report = json.loads(report_path.read_text())
-            failed = missing_pair or duplicate_pair or vertical_failure
+            failed = missing_pair or duplicate_pair or vertical_failure or timing_failure
             self.assertEqual(report['status'], 'not_measurable' if failed else 'measured')
             self.assertEqual(report['decision'], 'not_evaluated')
+            self.assertEqual(report['exposure_snapshot'], {'test': 'exposure'})
+            self.assertEqual(report['limits']['max_delta_ms'], 10 if check_timing else 80)
+            if dense_depth:
+                self.assertEqual(report['series_id'], 'b' * 32)
+                self.assertEqual(report['dense_depth']['status'], 'measured')
+                self.assertNotIn('previews', report['dense_depth'])
+            self.assertEqual(report['retryable'], missing_pair or duplicate_pair or vertical_failure)
+            self.assertFalse(report['access_granted'])
+            self.assertTrue(report['diagnostic_only'])
+            self.assertEqual(report['measurement_mode'], 'timing_checked' if check_timing else 'static_diagnostic')
+            if check_timing:
+                timing_context.assert_called_once()
+            else:
+                timing_context.assert_not_called()
+                self.assertFalse(report['timing_verified'])
+                self.assertNotIn('timing_report_id', report)
+                if not failed:
+                    self.assertNotIn('timing_depth_uncertainty_mm', report['metrics'])
             self.assertEqual(report['actual_fps'], {'primary': 19.1, 'secondary': 8.8})
             self.assertIn('wait_seconds', report['pair_selection'])
             self.assertNotIn('previews', report)
@@ -258,6 +311,46 @@ class StereoFaceTests(unittest.TestCase):
 
     def test_report_is_anonymous_and_calibration_is_not_changed(self):
         self.run_session()
+
+    def test_optional_temporal_check_is_preserved(self):
+        self.run_session(check_timing=True)
+
+    def test_sgbm_report_is_bound_to_series_without_saved_images(self):
+        self.run_session(dense_depth=True)
+
+    def test_sgbm_requires_static_confirmation_and_valid_series_id(self):
+        session = CalibrationSession()
+        session.active, session.session_id = True, 'test'
+        cases = [dict(dense_depth=True), dict(dense_depth=True, stationary_confirmed=True, check_timing=True),
+                 dict(series_id='../wrong'), dict(dense_depth='yes')]
+        with patch('utils.stereo_calibration.get_camera_manager') as manager:
+            for options in cases:
+                with self.assertRaises(ValueError):
+                    session.measure_face('test', 'a' * 32, True, True, 'live', 'daylight', 65, **options)
+            manager.assert_not_called()
+
+    def test_static_80ms_window_does_not_change_strict_window(self):
+        self.pair.secondary.timestamp_ns -= 60_000_000
+        with patch('utils.two_view_pad.extract_face_points', side_effect=self.project()):
+            result = inspect_pair(self.pair, self.arrays, [1280, 720],
+                                  dict(DEFAULT_LIMITS, max_delta_ms=80), static_diagnostic=True)
+        self.assertEqual(result['status'], 'measured')
+        strict = inspect_pair(self.pair, self.arrays, [1280, 720], DEFAULT_LIMITS)
+        self.assertEqual(strict['status'], 'not_measurable')
+
+    def test_optional_temporal_check_fails_without_profile(self):
+        self.run_session(check_timing=True, timing_failure=True)
+
+    def test_static_inspector_does_not_require_temporal_context(self):
+        with patch('utils.two_view_pad.extract_face_points', side_effect=self.project()), \
+                patch('utils.stereo_timing.timing_depth_uncertainty') as timing:
+            result = inspect_pair(self.pair, self.arrays, [1280, 720], DEFAULT_LIMITS,
+                                  static_diagnostic=True)
+        self.assertEqual(result['status'], 'measured')
+        self.assertFalse(result['timing_verified'])
+        self.assertFalse(result['access_granted'])
+        self.assertEqual(result['decision'], 'not_evaluated')
+        timing.assert_not_called()
         self.run_session(missing_pair=True)
         self.run_session(duplicate_pair=True)
         self.run_session(vertical_failure=True)
