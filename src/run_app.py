@@ -15,6 +15,7 @@ from utils.config_loader import load_config
 from utils.logger import log_info, log_error
 from utils.camera_manager import stop_camera_manager
 from src.monitor import run_monitoring
+from utils.challenge_session import challenge_session
 
 monitor_stop_event = threading.Event()
 monitor_thread = None
@@ -28,6 +29,9 @@ def cleanup():
     cleanup_started = True
 
     monitor_stop_event.set()
+    challenge_session.cancelled.set()
+    if challenge_session.worker and challenge_session.worker.is_alive():
+        challenge_session.worker.join(timeout=3)
     stop_camera_manager()
 
     if monitor_thread and monitor_thread.is_alive():

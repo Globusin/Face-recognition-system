@@ -16,6 +16,7 @@ from utils.camera_manager import CameraError, get_camera_manager, get_public_cam
 from utils.maintenance import maintenance
 from utils.stereo_calibration import calibration_session
 from utils.face_detection_preview import face_detection_preview
+from utils.challenge_session import challenge_session
 from utils.api_security import authorize_admin, login_admin, FramePreviewLimiter
 
 app = Flask(__name__)
@@ -93,6 +94,24 @@ def calibration_admin(view):
 @calibration_admin
 def calibration_status():
     return jsonify(calibration_session.status())
+
+
+@app.get('/api/challenge/status')
+def challenge_status():
+    return jsonify(challenge_session.status())
+
+
+@app.post('/api/challenge/<action>')
+@calibration_admin
+def challenge_action(action):
+    data = request.get_json(silent=True)
+    if not isinstance(data, dict):
+        return jsonify(message='Неверный формат запроса'), 400
+    if action == 'start':
+        return jsonify(challenge_session.start(data.get('consent_confirmed'), data.get('preparation_mode', False)))
+    if action == 'cancel':
+        return jsonify(challenge_session.cancel(data.get('session_id')))
+    return jsonify(message='Неизвестная команда'), 404
 
 
 @app.post('/api/calibration/frame/<role>')

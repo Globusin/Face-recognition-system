@@ -1,6 +1,8 @@
 """Состояния экрана и работа с TFT-дисплеем ST7735R на Raspberry Pi"""
 
 import time
+import threading
+from functools import wraps
 from abc import ABC, abstractmethod
 from enum import Enum
 from pathlib import Path
@@ -167,6 +169,20 @@ class NullDisplay(Display):
         pass
 
 
+def serialized_display_output(method):
+    """Одна операция вывода целиком, включая все кадры анимации"""
+    @wraps(method)
+    def locked_output(self, *args, **kwargs):
+        with self._output_lock:
+            try:
+                return method(self, *args, **kwargs)
+            except Exception as error:
+                log_error(f'TFT: ошибка {method.__name__}, поток {threading.current_thread().name}: '
+                          f'{type(error).__name__}: {error}')
+                raise
+    return locked_output
+
+
 class TFTDisplay(Display):
     """Выводит состояния, изображения и текст на дисплей ST7735R"""
 
@@ -182,6 +198,8 @@ class TFTDisplay(Display):
         if driver.width <= 0 or driver.height <= 0:
             raise ValueError("Размеры дисплея должны быть больше нуля")
         self._driver = driver
+        self._output_lock = threading.RLock()
+        self._last_state = None
         self.width = driver.width
         self.height = driver.height
         self._foreground = foreground
@@ -281,8 +299,16 @@ class TFTDisplay(Display):
             small_font_size=small_font_size,
         )
 
+    @serialized_display_output
     def show_state(self, state: DisplayState, detail: Optional[str] = None) -> None:
         """Показывает изображение состояния или текстовый экран"""
+        if state != self._last_state:
+            log_info(f'TFT: переход {self._last_state.value if self._last_state else "нет"} -> '
+                     f'{state.value}, поток {threading.current_thread().name}')
+        self._render_state(state, detail)
+        self._last_state = state
+
+    def _render_state(self, state, detail):
         if self._show_image_state(state):
             return
 
@@ -336,6 +362,7 @@ class TFTDisplay(Display):
 
         return True
 
+    @serialized_display_output
     def show_text(
         self,
         text: str,
@@ -363,6 +390,7 @@ class TFTDisplay(Display):
 
         self._driver.image(image)
 
+    @serialized_display_output
     def clear(self) -> None:
         image = Image.new("RGB", (self.width, self.height), self._background)
         self._driver.image(image)
