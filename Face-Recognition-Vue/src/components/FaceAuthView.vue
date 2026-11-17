@@ -23,6 +23,7 @@
                         <span>Калибровка</span>
                     </div>
                 </v-tab>
+                <v-tab value="challenge"><v-icon icon="mdi-eye-check" class="mr-2" />Задания</v-tab>
             </v-tabs>
         </div>
         <KeepAlive>
@@ -30,6 +31,7 @@
             <UsersManagement v-else-if="tab === 'users'" />
         </KeepAlive>
         <StereoCalibration v-if="tab === 'calibration'" />
+        <ChallengeVerification v-if="tab === 'challenge'" />
         </template>
     </div>
 </template>
@@ -39,10 +41,11 @@ import FaceAuthentication from './FaceAuthentication.vue';
 import UsersManagement from './UsersManagement.vue';
 import StereoCalibration from './StereoCalibration.vue';
 import AdminAccess from './AdminAccess.vue';
+import ChallengeVerification from './ChallengeVerification.vue';
 
 export default {
     name: 'FaceAuthView',
-    components: { FaceAuthentication, UsersManagement, StereoCalibration, AdminAccess },
+    components: { FaceAuthentication, UsersManagement, StereoCalibration, AdminAccess, ChallengeVerification },
     data() {
         return { tab: 'auth', authorized: false };
     },
