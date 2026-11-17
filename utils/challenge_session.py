@@ -123,9 +123,8 @@ class ChallengeSession:
                             observation = observe_face(frame.image, frame.timestamp_ns / 1e9, durations,
                                                        verify_identity=False)
                         except ValueError as error:
-                            if (flow.preparation_mode and flow.stage == 'baseline'
-                                    and str(error) in ('face_lost', 'landmarks_not_detected')):
-                                flow.wait_for_baseline(str(error))
+                            if str(error) in ('face_lost', 'landmarks_not_detected'):
+                                flow.missing_observation(str(error))
                                 self._publish(flow)
                                 self.cancelled.wait(0.1)
                                 continue

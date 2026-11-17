@@ -145,6 +145,7 @@ class ChallengeFlow:
         self.verify_identity = verify_identity
         self.diagnostics = {}
         self.frame_timing = {}
+        self.observation_status = 'waiting_for_face'
 
     def wait_for_baseline(self, reason):
         """После потери лица подготовка начинается заново, без переноса участника"""
@@ -154,12 +155,23 @@ class ChallengeFlow:
         if self.completed == 0:
             self.anchor = None
 
+    def missing_observation(self, reason):
+        """Пропуск не завершает проверку и не продлевает время задания"""
+        self.observation_status = reason
+        if self.stage == 'baseline':
+            self.wait_for_baseline(reason)
+        else:
+            self.action_started = None
+            self.last_timestamp = None
+            self.diagnostics = dict(reason=reason)
+
     @property
     def finished(self):
         return self.stage in ('passed', 'failed')
 
     def fail(self, reason):
         self.stage, self.reason = 'failed', reason
+        self.observation_status = reason
 
     def check_timeout(self, now):
         if self.finished:
@@ -208,6 +220,7 @@ class ChallengeFlow:
                 return
 
         if self.stage == 'baseline':
+            self.observation_status = 'face_found'
             eyes_open = 0.18 <= observation.left_eye <= 0.45 and 0.18 <= observation.right_eye <= 0.45
             head_straight = abs(observation.yaw) < self.settings['neutral_ratio']
             neutral = eyes_open and head_straight
@@ -247,21 +260,26 @@ class ChallengeFlow:
             active = direction * yaw_delta > self.settings['turn_ratio'] and eyes_open
 
         if self.stage == 'action':
+            self.observation_status = 'action_detected' if active else 'waiting_for_action'
             if active:
                 if self.action_started is None:
                     self.action_started = observation.timestamp
                 hold = 0.08 if self.command == 'BLINK' else 0.25
                 if observation.timestamp - self.action_started >= hold:
                     self.stage = 'return'
+                    self.observation_status = 'action_confirmed'
             else:
                 self.action_started = None
         elif self.stage == 'return' and neutral:
+            self.observation_status = 'returned_to_neutral'
             self.completed += 1
             self.command = None
             self.neutral_samples.clear()
             self.action_started = None
             self.stage_started = now
             self.stage = 'passed' if self.completed == self.settings['count'] else 'baseline'
+        elif self.stage == 'return':
+            self.observation_status = 'waiting_for_return'
 
     def acknowledge_prompt(self, now):
         if self.stage != 'prompt':
@@ -277,6 +295,7 @@ class ChallengeFlow:
                     max(0, round(timeout - (now - self.stage_started), 1)),
                     preparation_mode=self.preparation_mode, diagnostics=dict(self.diagnostics),
                     frame_timing=dict(self.frame_timing),
+                    observation_status=self.observation_status,
                     identity_continuity_checked=self.verify_identity,
                     elapsed_seconds=round(now - self.started, 2),
                     result='PASS' if self.stage == 'passed' else 'FAIL' if self.stage == 'failed' else None,

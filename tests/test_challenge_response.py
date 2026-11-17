@@ -17,6 +17,39 @@ def observation(timestamp, eye=0.3, yaw=0.0, identity=0.0, right=None):
 
 
 class ChallengeFlowTests(unittest.TestCase):
+    def test_missing_face_resets_hold_without_extending_timeout(self):
+        flow = self.make_flow('TURN_LEFT')
+        flow.feed(observation(1, yaw=.3), 1)
+        self.assertEqual(flow.snapshot(1)['observation_status'], 'action_detected')
+        deadline_start = flow.stage_started
+        flow.missing_observation('face_lost')
+        self.assertEqual(flow.snapshot(1)['observation_status'], 'face_lost')
+        self.assertEqual(flow.stage, 'action')
+        self.assertIsNone(flow.action_started)
+        self.assertEqual(flow.stage_started, deadline_start)
+        flow.feed(observation(2, yaw=.3), 2)
+        self.assertEqual(flow.stage, 'action')
+        flow.feed(observation(2.3, yaw=.3), 2.3)
+        self.assertEqual(flow.snapshot(2.3)['observation_status'], 'action_confirmed')
+        self.assertEqual(flow.stage, 'return')
+        flow.check_timeout(10)
+        self.assertEqual(flow.reason, 'timeout')
+
+    def test_multiple_faces_are_visible_in_status(self):
+        flow = self.make_flow('TURN_RIGHT')
+        flow.fail('multiple_faces')
+        self.assertEqual(flow.snapshot(1)['observation_status'], 'multiple_faces')
+        self.assertEqual(flow.snapshot(1)['result'], 'FAIL')
+
+    def test_missing_landmarks_resets_baseline_and_search_continues(self):
+        flow = ChallengeFlow(challenge_settings({}), now=0, verify_identity=False)
+        flow.feed(observation(.1), .1)
+        flow.missing_observation('landmarks_not_detected')
+        self.assertEqual(flow.neutral_samples, [])
+        self.assertEqual(flow.stage, 'baseline')
+        flow.check_timeout(7)
+        self.assertEqual(flow.reason, 'baseline_timeout')
+
     def test_random_selection_contains_only_head_turns(self):
         flow = ChallengeFlow(challenge_settings({}), now=0, verify_identity=False)
         with patch('utils.challenge_response.secrets.choice', return_value='TURN_RIGHT') as choose:
@@ -285,21 +318,26 @@ class ChallengeSessionTests(unittest.TestCase):
         gate.challenge_running.set()
         manager = Mock()
         clock = [100.0]
-        samples = iter([(100.1, 0), (100.4, 0), (100.8, 0),
-                        (101.1, .3), (101.4, .3), (101.6, 0)])
+        samples = iter([(100.0, None), (100.1, 0), (100.4, 0), (100.8, 0),
+                        (101.0, None), (101.1, .3), (101.4, .3), (101.6, 0)])
         current = [None]
 
         def latest(*args, **kwargs):
             timestamp, yaw = next(samples)
             clock[0] = timestamp
-            current[0] = observation(timestamp, yaw=yaw)
+            current[0] = None if yaw is None else observation(timestamp, yaw=yaw)
             return Mock(sequence=round(timestamp * 10), timestamp_ns=int(timestamp * 1e9), image=None)
+
+        def observe(*args, **kwargs):
+            if current[0] is None:
+                raise ValueError('face_lost')
+            return current[0]
 
         manager.get_latest_frame.side_effect = latest
         service = ChallengeSession()
         with patch('utils.challenge_session.maintenance', gate), \
                 patch('utils.challenge_session.get_camera_manager', return_value=manager), \
-                patch('utils.challenge_session.observe_face', side_effect=lambda *args, **kwargs: current[0]), \
+                patch('utils.challenge_session.observe_face', side_effect=observe), \
                 patch('utils.challenge_response.secrets.choice', return_value='TURN_LEFT'), \
                 patch('utils.challenge_session.time.monotonic', side_effect=lambda: clock[0]), \
                 patch.object(service.cancelled, 'wait'):

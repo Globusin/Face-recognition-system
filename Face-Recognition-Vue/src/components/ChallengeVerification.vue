@@ -27,6 +27,9 @@
         <v-alert v-if="result.display_available === false" type="warning" variant="tonal">TFT недоступен</v-alert>
         <div aria-live="polite" class="d-flex flex-column ga-3">
             <h3 class="text-h6">{{ instruction }}</h3>
+            <v-alert v-if="result.observation_status" :type="['face_lost', 'multiple_faces', 'landmarks_not_detected'].includes(result.observation_status) ? 'warning' : 'info'" variant="tonal">
+                {{ observationLabel }}
+            </v-alert>
             <span v-if="result.total">Выполнено {{ result.completed || 0 }} из {{ result.total }}</span>
             <v-progress-linear v-if="result.total" :model-value="100 * (result.completed || 0) / result.total" />
             <span v-if="active">{{ result.preparation_mode && result.stage === 'baseline' ? 'Подготовка без ограничения времени' : `Осталось на этап: ${result.remaining_seconds ?? '—'} с` }}</span>
@@ -70,6 +73,20 @@ const reasons = {
 export default {
     data() { return { consent: false, preparationMode: false, busy: false, error: '', result: { stage: 'idle' }, timer: null, controller: null, disposed: false }; },
     computed: {
+        observationLabel() {
+            if (this.result.observation_status === 'action_detected' && this.result.command !== 'BLINK') {
+                return `Голова повёрнута ${this.result.command === 'TURN_LEFT' ? 'влево' : 'вправо'} · удерживайте положение`;
+            }
+            return ({ waiting_for_face: 'Ожидание первого наблюдения', face_found: 'Лицо найдено · проверяется исходное положение',
+                face_lost: 'Лицо не найдено · поиск продолжается', multiple_faces: 'Обнаружено несколько лиц · проверка остановлена',
+                landmarks_not_detected: 'Не удалось определить точки лица · поиск продолжается',
+                waiting_for_action: 'Лицо найдено · ожидается выполнение команды',
+                action_detected: 'Действие обнаружено · удерживайте положение',
+                action_confirmed: 'Действие подтверждено · вернитесь в исходное положение',
+                waiting_for_return: 'Лицо найдено · ожидается возврат в исходное положение',
+                returned_to_neutral: 'Исходное положение восстановлено' })[this.result.observation_status]
+                || reasons[this.result.observation_status] || this.result.observation_status;
+        },
         timingFields() {
             return [['age_before_processing_ms', 'Возраст до обработки'], ['age_after_processing_ms', 'Возраст после обработки'],
                 ['processing_ms', 'Обработка кадра'], ['observation_gap_ms', 'Интервал наблюдений'],
