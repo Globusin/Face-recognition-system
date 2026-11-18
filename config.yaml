@@ -81,7 +81,7 @@ challenge_response:
   # Эксперимент, не включён в разрешение доступа
   count: 3
   baseline_seconds: 0.6
-  baseline_timeout: 6.0
+  baseline_timeout: 12.0
   action_timeout: 8.0
   max_gap_seconds: 1.5
   closed_ratio: 0.65

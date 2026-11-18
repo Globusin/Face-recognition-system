@@ -7,6 +7,8 @@ from dataclasses import dataclass, field
 import cv2
 import numpy as np
 from utils.stereo_timing import record_duration
+from utils.head_pose import estimate_head_pose
+from copy import deepcopy
 
 
 COMMANDS = {
@@ -18,7 +20,7 @@ COMMANDS = {
 # Моргание временно исключено: частота анализа на Pi пока не проверена
 ACTIVE_COMMANDS = ('TURN_LEFT', 'TURN_RIGHT')
 
-DEFAULTS = dict(count=3, baseline_seconds=0.6, baseline_timeout=6.0,
+DEFAULTS = dict(count=3, baseline_seconds=0.6, baseline_timeout=12.0,
                 action_timeout=8.0, max_gap_seconds=1.5,
                 closed_ratio=0.65, open_ratio=0.85, turn_ratio=0.18,
                 neutral_ratio=0.12, identity_distance=0.45)
@@ -47,6 +49,7 @@ class FaceObservation:
     right_eye: float
     yaw: float
     embedding: np.ndarray | None = field(default=None, repr=False)
+    head_pose: dict | None = None
 
 
 def eye_aspect_ratio(points):
@@ -86,12 +89,12 @@ def observe_face(image, timestamp, durations=None, *, verify_identity=True):
         raise ValueError('multiple_faces')
 
     with record_duration(durations, 'landmarks'):
-        landmarks = face_recognition.face_landmarks(rgb, face_locations=locations, model='large')
+        face_points = face_recognition.face_landmarks(rgb, face_locations=locations, model='large')
 
-    if len(landmarks) != 1:
+    if len(face_points) != 1:
         raise ValueError('landmarks_not_detected')
 
-    face = landmarks[0]
+    face = face_points[0]
     left = face.get('left_eye', [])
     right = face.get('right_eye', [])
     left_ratio, right_ratio = eye_aspect_ratio(left), eye_aspect_ratio(right)
@@ -122,7 +125,10 @@ def observe_face(image, timestamp, durations=None, *, verify_identity=True):
 
         embedding = np.asarray(encodings[0])
 
-    return FaceObservation(timestamp, left_ratio, right_ratio, yaw, embedding)
+    with record_duration(durations, 'head_pose'):
+        pose = estimate_head_pose(face, rgb.shape[1::-1])
+
+    return FaceObservation(timestamp, left_ratio, right_ratio, yaw, embedding, pose)
 
 
 class ChallengeFlow:
@@ -146,6 +152,30 @@ class ChallengeFlow:
         self.diagnostics = {}
         self.frame_timing = {}
         self.observation_status = 'waiting_for_face'
+        self.head_pose = None
+        self.tasks = []
+
+    def task_time(self, timestamp):
+        """Времена в отчёте относительно начала сессии, в секундах"""
+        return timestamp - self.started
+
+    def record_task_observation(self, observation):
+        if not self.tasks or self.tasks[-1]['result'] is not None:
+            return
+        task = self.tasks[-1]
+        if task['prompt_completed_s'] is None or observation.timestamp <= self.stage_started:
+            return
+        task['observations'] += 1
+        task['yaw_ratio_min'] = min(task['yaw_ratio_min'], observation.yaw)
+        task['yaw_ratio_max'] = max(task['yaw_ratio_max'], observation.yaw)
+        pose = observation.head_pose
+        if pose and pose.get('status') == 'estimated':
+            task['pose_observations'] += 1
+            for angle in ('yaw_deg', 'pitch_deg', 'roll_deg'):
+                value = pose[angle]
+                bounds = task['angle_ranges_deg'].setdefault(angle, dict(min=value, max=value))
+                bounds['min'] = min(bounds['min'], value)
+                bounds['max'] = max(bounds['max'], value)
 
     def wait_for_baseline(self, reason):
         """После потери лица подготовка начинается заново, без переноса участника"""
@@ -158,6 +188,10 @@ class ChallengeFlow:
     def missing_observation(self, reason):
         """Пропуск не завершает проверку и не продлевает время задания"""
         self.observation_status = reason
+        self.head_pose = None
+        if self.tasks and self.tasks[-1]['result'] is None:
+            task = self.tasks[-1]
+            task['missing_observations'][reason] = task['missing_observations'].get(reason, 0) + 1
         if self.stage == 'baseline':
             self.wait_for_baseline(reason)
         else:
@@ -169,9 +203,14 @@ class ChallengeFlow:
     def finished(self):
         return self.stage in ('passed', 'failed')
 
-    def fail(self, reason):
+    def fail(self, reason, now=None):
         self.stage, self.reason = 'failed', reason
         self.observation_status = reason
+        if self.tasks and self.tasks[-1]['result'] is None:
+            self.tasks[-1].update(result='FAIL', reason=reason,
+                                 finished_s=self.task_time(time.monotonic() if now is None else now))
+            task = self.tasks[-1]
+            task['total_seconds'] = task['finished_s'] - task['generated_s']
 
     def check_timeout(self, now):
         if self.finished:
@@ -180,7 +219,7 @@ class ChallengeFlow:
             return
         timeout = self.settings['baseline_timeout'] if self.stage == 'baseline' else self.settings['action_timeout']
         if now - self.stage_started >= timeout:
-            self.fail('baseline_timeout' if self.stage == 'baseline' else 'timeout')
+            self.fail('baseline_timeout' if self.stage == 'baseline' else 'timeout', now)
 
     def feed(self, observation, now):
         self.check_timeout(now)
@@ -212,6 +251,8 @@ class ChallengeFlow:
             self.fail('stale_frame')
             return
         self.last_timestamp = observation.timestamp
+        self.head_pose = observation.head_pose
+        self.record_task_observation(observation)
         if self.verify_identity:
             if self.anchor is None:
                 self.anchor = embedding.copy()
@@ -242,6 +283,43 @@ class ChallengeFlow:
                                            for item in self.neutral_samples], axis=0)
                 # Команда выбирается лишь после нейтрального положения
                 self.command = secrets.choice(ACTIVE_COMMANDS)
+                # Создаём запись задания, измерения заполнятся во время выполнения
+                task = dict(
+                    number=self.completed + 1,
+                    command=self.command,
+
+                    generated_s=self.task_time(now),
+                    prompt_started_s=None,
+                    prompt_completed_s=None,
+                    prompt_render_seconds=None,
+                    preparation_seconds=now - self.stage_started,
+                    total_seconds=None,
+
+                    baseline_yaw_ratio=float(self.baseline[2]),
+                    baseline_pose=observation.head_pose,
+
+                    first_action_s=None,
+                    confirmed_s=None,
+                    returned_s=None,
+                    finished_s=None,
+
+                    reaction_seconds=None,
+                    confirmation_seconds=None,
+                    return_seconds=None,
+                    confirmed_hold_seconds=None,
+
+                    observations=0,
+                    pose_observations=0,
+                    yaw_ratio_min=float(self.baseline[2]),
+                    yaw_ratio_max=float(self.baseline[2]),
+                    angle_ranges_deg={},
+                    missing_observations={},
+
+                    result=None,
+                    reason=None,
+                )
+
+                self.tasks.append(task)
                 self.stage = 'prompt'
             return
 
@@ -264,14 +342,29 @@ class ChallengeFlow:
             if active:
                 if self.action_started is None:
                     self.action_started = observation.timestamp
+                    if self.tasks and self.tasks[-1]['first_action_s'] is None:
+                        task = self.tasks[-1]
+                        task['first_action_s'] = self.task_time(observation.timestamp)
+                        task['reaction_seconds'] = task['first_action_s'] - task['prompt_completed_s']
                 hold = 0.08 if self.command == 'BLINK' else 0.25
                 if observation.timestamp - self.action_started >= hold:
                     self.stage = 'return'
                     self.observation_status = 'action_confirmed'
+                    if self.tasks:
+                        task = self.tasks[-1]
+                        task['confirmed_s'] = self.task_time(observation.timestamp)
+                        task['confirmation_seconds'] = task['confirmed_s'] - task['prompt_completed_s']
+                        task['confirmed_hold_seconds'] = observation.timestamp - self.action_started
             else:
                 self.action_started = None
         elif self.stage == 'return' and neutral:
             self.observation_status = 'returned_to_neutral'
+            if self.tasks:
+                task = self.tasks[-1]
+                task.update(result='PASS', returned_s=self.task_time(observation.timestamp),
+                            finished_s=self.task_time(now))
+                task['total_seconds'] = task['finished_s'] - task['generated_s']
+                task['return_seconds'] = task['returned_s'] - task['confirmed_s']
             self.completed += 1
             self.command = None
             self.neutral_samples.clear()
@@ -286,6 +379,11 @@ class ChallengeFlow:
             raise RuntimeError('Команда ещё не готова')
         self.stage_started = now
         self.stage = 'action'
+        if self.tasks:
+            task = self.tasks[-1]
+            task['prompt_completed_s'] = self.task_time(now)
+            if task['prompt_started_s'] is not None:
+                task['prompt_render_seconds'] = task['prompt_completed_s'] - task['prompt_started_s']
 
     def snapshot(self, now):
         timeout = self.settings['baseline_timeout'] if self.stage == 'baseline' else self.settings['action_timeout']
@@ -296,6 +394,7 @@ class ChallengeFlow:
                     preparation_mode=self.preparation_mode, diagnostics=dict(self.diagnostics),
                     frame_timing=dict(self.frame_timing),
                     observation_status=self.observation_status,
+                    head_pose=deepcopy(self.head_pose), tasks=deepcopy(self.tasks),
                     identity_continuity_checked=self.verify_identity,
                     elapsed_seconds=round(now - self.started, 2),
                     result='PASS' if self.stage == 'passed' else 'FAIL' if self.stage == 'failed' else None,

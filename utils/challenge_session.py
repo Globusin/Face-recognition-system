@@ -4,13 +4,15 @@ import threading
 import time
 import uuid
 import json
+from pathlib import Path
+from datetime import datetime, timezone
 
 from utils.camera_manager import get_camera_manager
 from utils.config_loader import load_config
 from utils.display import DisplayState, NullDisplay
 from utils.challenge_response import COMMANDS, ChallengeFlow, challenge_settings, observe_face
 from utils.maintenance import maintenance
-from utils.stereo_calibration import calibration_session
+from utils.stereo_calibration import calibration_session, write_json
 from utils.logger import log_info, log_error
 from utils.timing import measure_time
 
@@ -77,6 +79,7 @@ class ChallengeSession:
 
     def _run(self, settings, preparation_mode=False):
         flow = ChallengeFlow(settings, preparation_mode=preparation_mode, verify_identity=False)
+        created_at = datetime.now(timezone.utc).isoformat()
         display = maintenance.display
         try:
             with maintenance.lock, measure_time('Случайные задания', summary=True):
@@ -106,6 +109,7 @@ class ChallengeSession:
                     age = now - frame.timestamp_ns / 1e9
                     gap = None if flow.last_timestamp is None else frame.timestamp_ns / 1e9 - flow.last_timestamp
                     flow.frame_timing = dict(sequence=frame.sequence, previous_sequence=sequence,
+                        stage=flow.stage, command=flow.command,
                         age_before_processing_ms=age * 1000, frame_age_limit_ms=500,
                         observation_gap_ms=None if gap is None else gap * 1000,
                         observation_limit_ms=settings['max_gap_seconds'] * 1000,
@@ -122,6 +126,7 @@ class ChallengeSession:
                         try:
                             observation = observe_face(frame.image, frame.timestamp_ns / 1e9, durations,
                                                        verify_identity=False)
+                            flow.frame_timing['head_pose'] = observation.head_pose
                         except ValueError as error:
                             if str(error) in ('face_lost', 'landmarks_not_detected'):
                                 flow.missing_observation(str(error))
@@ -137,6 +142,8 @@ class ChallengeSession:
                                      + json.dumps(flow.frame_timing, ensure_ascii=False))
                     flow.feed(observation, time.monotonic())
                     if flow.stage == 'prompt':
+                        if flow.tasks:
+                            flow.tasks[-1]['prompt_started_s'] = flow.task_time(time.monotonic())
                         display.show_state(DisplayState.CHALLENGE, COMMANDS[flow.command])
                         # Старые кадры до завершения вывода команды не засчитываются
                         flow.acknowledge_prompt(time.monotonic())
@@ -163,6 +170,21 @@ class ChallengeSession:
             except Exception as error:
                 log_error(f'Проверка заданий: не удалось восстановить TFT после заданий: {type(error).__name__}: {error}')
             self._publish(flow)
+            if self.session_id is not None:
+                report = flow.snapshot(time.monotonic())
+                report.update(version=1, session_id=self.session_id, created_at=created_at,
+                              settings=dict(settings), timestamp_source='read_complete_monotonic',
+                              pose_is_estimate=True, diagnostic_only=True,
+                              pose_convention='degrees; object_to_camera; Rz(roll)*Ry(yaw)*Rx(pitch); X_right_Y_down_Z_forward',
+                              timing_kind='sampled_threshold_crossings_not_true_motion_onset',
+                              prompt_timestamp_source='display_call_completed_not_physical_display_measurement')
+                try:
+                    folder = Path(__file__).resolve().parent.parent / 'data' / 'challenge_checks'
+                    folder.mkdir(parents=True, exist_ok=True)
+                    write_json(folder / f'{self.session_id}.json', report)
+                    log_info(f'Проверка заданий: сохранён отчёт {self.session_id}.json')
+                except OSError as error:
+                    log_error(f'Проверка заданий: не удалось сохранить отчёт: {error}')
             flow.anchor = None
             flow.neutral_samples.clear()
             with maintenance.lock:

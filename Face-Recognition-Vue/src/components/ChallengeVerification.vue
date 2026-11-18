@@ -27,6 +27,12 @@
         <v-alert v-if="result.display_available === false" type="warning" variant="tonal">TFT недоступен</v-alert>
         <div aria-live="polite" class="d-flex flex-column ga-3">
             <h3 class="text-h6">{{ instruction }}</h3>
+            <div v-if="result.head_pose?.status === 'estimated'" class="d-flex flex-wrap ga-3">
+                <span>Оценка yaw: {{ result.head_pose.yaw_deg.toFixed(1) }}°</span>
+                <span>Pitch: {{ result.head_pose.pitch_deg.toFixed(1) }}°</span>
+                <span>Roll: {{ result.head_pose.roll_deg.toFixed(1) }}°</span>
+                <span>Приближённая модель · не эталонные углы</span>
+            </div>
             <v-alert v-if="result.observation_status" :type="['face_lost', 'multiple_faces', 'landmarks_not_detected'].includes(result.observation_status) ? 'warning' : 'info'" variant="tonal">
                 {{ observationLabel }}
             </v-alert>
@@ -45,13 +51,18 @@
                 {{ result.result === 'PASS' ? 'Задания выполнены · личность не установлена' : reason }}
             </v-alert>
             <span v-if="result.session_id" style="overflow-wrap: anywhere">Сессия: {{ result.session_id }}</span>
+            <div v-for="task in result.tasks || []" :key="task.number" class="d-flex flex-column ga-1">
+                <strong>Задание {{ task.number }} · {{ task.command === 'TURN_LEFT' ? 'Влево' : task.command === 'TURN_RIGHT' ? 'Вправо' : 'Моргание' }}</strong>
+                <span>Реакция: {{ task.reaction_seconds == null ? '—' : task.reaction_seconds.toFixed(2) + ' с' }} · Подтверждение: {{ task.confirmation_seconds == null ? '—' : task.confirmation_seconds.toFixed(2) + ' с' }} · Возврат: {{ task.return_seconds == null ? '—' : task.return_seconds.toFixed(2) + ' с' }}</span>
+                <span>Результат: {{ task.result || 'В процессе' }}{{ task.reason ? ' · ' + (reasonLabels[task.reason] || task.reason) : '' }}</span>
+            </div>
             <div v-if="result.reason === 'stale_frame' && result.frame_timing" class="d-flex flex-column ga-2">
                 <span>Причина: {{ timingReason }}</span>
                 <span v-for="[key, label] in timingFields" :key="key">
                     {{ label }}: {{ result.frame_timing[key] == null ? '—' : result.frame_timing[key].toFixed(1) + ' мс' }}
                 </span>
                 <span v-for="(value, key) in result.frame_timing.stages_ms" :key="key">
-                    {{ ({ image_preparation: 'Подготовка изображения', face_detection: 'Поиск лица', landmarks: 'Ключевые точки', embedding: 'Эмбеддинг' })[key] || key }}: {{ value.toFixed(1) }} мс
+                    {{ ({ image_preparation: 'Подготовка изображения', face_detection: 'Поиск лица', landmarks: 'Ключевые точки', embedding: 'Эмбеддинг', head_pose: 'Оценка углов' })[key] || key }}: {{ value.toFixed(1) }} мс
                 </span>
             </div>
         </div>
@@ -73,6 +84,7 @@ const reasons = {
 export default {
     data() { return { consent: false, preparationMode: false, busy: false, error: '', result: { stage: 'idle' }, timer: null, controller: null, disposed: false }; },
     computed: {
+        reasonLabels() { return reasons; },
         observationLabel() {
             if (this.result.observation_status === 'action_detected' && this.result.command !== 'BLINK') {
                 return `Голова повёрнута ${this.result.command === 'TURN_LEFT' ? 'влево' : 'вправо'} · удерживайте положение`;
