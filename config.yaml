@@ -77,6 +77,19 @@ hotspot:
 # Параметры распознавания
 similarity: 0.15  # Порог схожести (чем меньше, тем строже сравнение)
 
+challenge_response:
+  # Эксперимент, не включён в разрешение доступа
+  count: 3
+  baseline_seconds: 0.6
+  baseline_timeout: 12.0
+  action_timeout: 8.0
+  max_gap_seconds: 1.5
+  closed_ratio: 0.65
+  open_ratio: 0.85
+  turn_ratio: 0.18
+  neutral_ratio: 0.12
+  identity_distance: 0.45
+
 recognition_optimization:
   roi_enabled: true
   roi_padding: 0.30  # Отступ с каждой стороны относительно ширины и высоты лица

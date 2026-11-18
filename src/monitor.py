@@ -18,6 +18,8 @@ from utils.maintenance import maintenance
 
 def safe_display_state(display, state: DisplayState, detail: str = None) -> None:
     """Обновляет экран, не останавливая монитор при ошибке дисплея"""
+    if maintenance.challenge_running.is_set():
+        return
     try:
         display.show_state(state, detail)
     except Exception as e:
@@ -42,6 +44,7 @@ def run_monitoring(stop_event=None):
 
     lock_controller = initialize_lock_controller(config)
     display = initialize_display(config)
+    maintenance.display = display
 
     detection_interval = config.get('detection_interval', 2)
     door_open_time = config.get('door_open_time', 5)
@@ -84,19 +87,22 @@ def run_monitoring(stop_event=None):
                 continue
 
             try:
-                safe_display_state(display, DisplayState.STANDBY, "Подойдите\nк камере")
-                if not wait_for_face(
-                    stop_event,
-                    on_wait=lambda: safe_display_state(display, DisplayState.STANDBY),
-                    cancel_event=maintenance.requested,
-                ):
+                # Пауза обслуживания ждёт также завершения поиска лица
+                with maintenance.recognition():
+                    safe_display_state(display, DisplayState.STANDBY, "Подойдите\nк камере")
+                    if not wait_for_face(
+                        stop_event,
+                        on_wait=lambda: safe_display_state(display, DisplayState.STANDBY),
+                        cancel_event=maintenance.requested,
+                    ):
+                        if maintenance.requested.is_set():
+                            continue
+                        break
+
                     if maintenance.requested.is_set():
                         continue
-                    break
-
-                log_debug("Лицо обнаружено, запускаем распознавание по серии кадров")
-                safe_display_state(display, DisplayState.CHECKING, "Распознавание\nлица")
-                with maintenance.recognition():
+                    log_debug("Лицо обнаружено, запускаем распознавание по серии кадров")
+                    safe_display_state(display, DisplayState.CHECKING, "Распознавание\nлица")
                     is_authenticated, user_id, distance = recognize_face_from_camera()
             except Exception as e:
                 if maintenance.requested.is_set():
