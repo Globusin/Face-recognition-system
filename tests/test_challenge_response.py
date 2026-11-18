@@ -3,6 +3,7 @@
 import threading
 import time
 import unittest
+import json
 from unittest.mock import Mock, patch
 
 import numpy as np
@@ -17,6 +18,30 @@ def observation(timestamp, eye=0.3, yaw=0.0, identity=0.0, right=None):
 
 
 class ChallengeFlowTests(unittest.TestCase):
+    def test_task_report_times_angles_and_timeout(self):
+        flow = self.make_flow('TURN_LEFT')
+        for timestamp in (1.0, 1.3):
+            sample = observation(timestamp, yaw=.3)
+            sample.head_pose = dict(status='estimated', yaw_deg=-20., pitch_deg=2., roll_deg=1.)
+            flow.feed(sample, timestamp)
+        flow.feed(observation(1.5), 1.5)
+        task = flow.snapshot(1.5)['tasks'][0]
+        self.assertEqual(task['result'], 'PASS')
+        self.assertAlmostEqual(task['reaction_seconds'], .1)
+        self.assertAlmostEqual(task['confirmation_seconds'], .4)
+        self.assertAlmostEqual(task['confirmed_hold_seconds'], .3)
+        self.assertAlmostEqual(task['return_seconds'], .2)
+        self.assertEqual(task['angle_ranges_deg']['yaw_deg'], {'min': -20., 'max': -20.})
+        self.assertEqual(task['pose_observations'], 2)
+        task['result'] = 'MODIFIED'
+        self.assertEqual(flow.tasks[0]['result'], 'PASS')
+        flow = self.make_flow('TURN_RIGHT')
+        flow.check_timeout(10)
+        self.assertEqual(flow.tasks[0]['result'], 'FAIL')
+        self.assertEqual(flow.tasks[0]['reason'], 'timeout')
+        self.assertEqual(flow.tasks[0]['finished_s'], 10)
+        json.dumps(flow.snapshot(10), allow_nan=False)
+
     def test_missing_face_resets_hold_without_extending_timeout(self):
         flow = self.make_flow('TURN_LEFT')
         flow.feed(observation(1, yaw=.3), 1)
@@ -47,7 +72,7 @@ class ChallengeFlowTests(unittest.TestCase):
         flow.missing_observation('landmarks_not_detected')
         self.assertEqual(flow.neutral_samples, [])
         self.assertEqual(flow.stage, 'baseline')
-        flow.check_timeout(7)
+        flow.check_timeout(13)
         self.assertEqual(flow.reason, 'baseline_timeout')
 
     def test_random_selection_contains_only_head_turns(self):
@@ -175,6 +200,8 @@ class ChallengeFlowTests(unittest.TestCase):
     def test_baseline_timeout_and_bad_landmarks(self):
         flow = ChallengeFlow(challenge_settings({}), now=0)
         flow.check_timeout(6)
+        self.assertEqual(flow.stage, 'baseline')
+        flow.check_timeout(12)
         self.assertEqual(flow.reason, 'baseline_timeout')
         flow = self.make_flow()
         sample = observation(1.0)
@@ -222,7 +249,7 @@ class ChallengeFlowTests(unittest.TestCase):
                 patch('face_recognition.face_landmarks', return_value=[landmarks]) as detect_points, \
                 patch('face_recognition.face_encodings', return_value=[np.zeros(128)]) as encode:
             result = observe_face(image, 1, durations)
-        self.assertEqual(set(durations), {'image_preparation', 'face_detection', 'landmarks', 'embedding'})
+        self.assertEqual(set(durations), {'image_preparation', 'face_detection', 'landmarks', 'embedding', 'head_pose'})
         self.assertTrue(all(len(values) == 1 and values[0] >= 0 for values in durations.values()))
         self.assertAlmostEqual(result.left_eye, .4)
         self.assertEqual(result.timestamp, 1)
@@ -293,7 +320,8 @@ class ChallengeSessionTests(unittest.TestCase):
         with patch('utils.challenge_session.maintenance', gate), \
                 patch('utils.challenge_session.calibration_session.active', False), \
                 patch('utils.challenge_session.load_config', return_value={}), \
-                patch('utils.challenge_session.get_camera_manager', return_value=manager):
+                patch('utils.challenge_session.get_camera_manager', return_value=manager), \
+                patch('utils.challenge_session.write_json') as save_report:
             result = service.start(True)
             self.assertTrue(entered.wait(2))
             with self.assertRaises(RuntimeError):
@@ -304,6 +332,12 @@ class ChallengeSessionTests(unittest.TestCase):
             service.cancel(result['session_id'])
             service.worker.join(3)
             self.assertFalse(service.worker.is_alive())
+            saved = save_report.call_args.args[1]
+            self.assertEqual(saved['session_id'], result['session_id'])
+            self.assertTrue(saved['diagnostic_only'])
+            self.assertFalse(saved['access_granted'])
+            self.assertEqual(saved['reason'], 'cancelled')
+            json.dumps(saved, allow_nan=False)
         self.assertFalse(gate.requested.is_set())
         self.assertFalse(gate.challenge_running.is_set())
         self.assertEqual(service.status()['reason'], 'cancelled')
