@@ -2,17 +2,17 @@
 # -*- coding: utf-8 -*-
 import sys
 import threading
-import time
 from pathlib import Path
 
 sys.path.append(str(Path(__file__).parent.parent))
 
+from utils.authentication import AuthenticationEngine, AuthenticationState
 from utils.recognition import recognize_face_from_camera
 from utils.video_capture import wait_for_face
 from utils.lock_controller import initialize_lock_controller
 from utils.display import initialize_display, DisplayState
 from utils.config_loader import load_config
-from utils.logger import log_info, log_error, log_warning, log_debug
+from utils.logger import log_info, log_error, log_warning
 from utils.maintenance import maintenance
 
 
@@ -53,27 +53,37 @@ def run_monitoring(stop_event=None):
     log_info(f"Интервал проверки: {detection_interval} сек.")
     log_info(f"Время открытия двери: {door_open_time} сек.")
 
-    is_door_open = False
-    last_success_time = 0
+    def show_authentication_state(state):
+        states = {
+            AuthenticationState.IDLE: DisplayState.STANDBY,
+            AuthenticationState.TRACKING: DisplayState.CHECKING,
+            AuthenticationState.EVALUATING: DisplayState.CHECKING,
+            AuthenticationState.CHALLENGE: DisplayState.CHECKING,
+            AuthenticationState.GRANTED: DisplayState.ACCESS_GRANTED,
+            AuthenticationState.DENIED: DisplayState.ACCESS_DENIED,
+            AuthenticationState.ERROR: DisplayState.ERROR,
+        }
+        if state in states:
+            safe_display_state(display, states[state])
+        session = engine.session
+        reason = session.reason if session else ''
+        log_info(f"Аутентификация: {state.value}, причина: {reason or '-'}")
 
+    settings = config.get('authentication', {})
+    engine = AuthenticationEngine(
+        lock_controller, maintenance, stop_event,
+        session_timeout=settings.get('session_timeout_seconds', 20.0),
+        cooldown_seconds=detection_interval,
+        door_open_seconds=door_open_time,
+        on_state=show_authentication_state,
+    )
     safe_display_state(display, DisplayState.STANDBY, "Готов к работе")
 
     try:
         while not stop_event.is_set():
-            current_time = time.monotonic()
-
-            # Проверяем, нужно ли закрыть дверь после открытия
-            if is_door_open and (current_time - last_success_time) >= door_open_time:
-                log_info("Автоматическое закрытие замка...")
-                lock_controller.lock()
-                maintenance.door_open.clear()
-                is_door_open = False
-                safe_display_state(display, DisplayState.STANDBY)
-                log_info("Замок закрыт")
-
-            # Если дверь открыта, пропускаем проверку
-            if is_door_open:
-                wait_or_stop(stop_event, 0.5)
+            engine.tick()
+            if engine.state != AuthenticationState.IDLE:
+                wait_or_stop(stop_event, 0.1)
                 continue
 
             if maintenance.requested.is_set():
@@ -87,7 +97,6 @@ def run_monitoring(stop_event=None):
                 continue
 
             try:
-                # Пауза обслуживания ждёт также завершения поиска лица
                 with maintenance.recognition():
                     safe_display_state(display, DisplayState.STANDBY, "Подойдите\nк камере")
                     if not wait_for_face(
@@ -95,74 +104,26 @@ def run_monitoring(stop_event=None):
                         on_wait=lambda: safe_display_state(display, DisplayState.STANDBY),
                         cancel_event=maintenance.requested,
                     ):
-                        if maintenance.requested.is_set():
-                            continue
-                        break
-
-                    if maintenance.requested.is_set():
                         continue
-                    log_debug("Лицо обнаружено, запускаем распознавание по серии кадров")
-                    safe_display_state(display, DisplayState.CHECKING, "Распознавание\nлица")
-                    is_authenticated, user_id, distance = recognize_face_from_camera()
-            except Exception as e:
+                    session_id = engine.begin()
+                    if session_id is not None:
+                        engine.evaluate(session_id, recognize_face_from_camera)
+            except Exception as error:
                 if maintenance.requested.is_set():
+                    engine.cancel('maintenance')
                     continue
-                log_error(f"Ошибка при захвате или распознавании: {e}")
-                safe_display_state(display, DisplayState.ERROR, "Ошибка камеры\nили модели")
-                wait_or_stop(stop_event, detection_interval)
-                safe_display_state(display, DisplayState.STANDBY)
-                continue
-
-            if is_authenticated:
-                log_info(f"Пользователь распознан! Идентификатор: {user_id}, расстояние: {distance:.4f}")
-
-                log_info("Открытие замка...")
-                with maintenance.lock:
-                    if maintenance.requested.is_set():
-                        continue
-                    unlocked = lock_controller.unlock()
-                    if unlocked:
-                        maintenance.door_open.set()
-                if unlocked:
-                    log_info("Замок успешно открыт (программная заглушка)")
-                    is_door_open = True
-                    last_success_time = time.monotonic()
-
-                    safe_display_state(
-                        display,
-                        DisplayState.ACCESS_GRANTED,
-                        f"Пользователь:\n{user_id}\nРасстояние:\n{distance:.3f}"
-                    )
-
-                    # Логирование события доступа
-                    log_info(f"Доступ предоставлен пользователю {user_id}")
-                else:
-                    log_error("Ошибка при открытии замка")
-                    safe_display_state(display, DisplayState.ERROR, "Ошибка замка")
-            else:
-                log_debug("Лицо не распознано или не найдено в базе данных")
-                safe_display_state(display, DisplayState.ACCESS_DENIED, "Пользователь\nне распознан")
-                wait_or_stop(stop_event, 1)
-                safe_display_state(display, DisplayState.STANDBY)
-
-            # Ждем перед следующей проверкой
-            wait_or_stop(stop_event, detection_interval)
+                log_error(f"Ошибка при захвате или распознавании: {error}")
+                engine.fail('camera_or_processing_error')
 
     except KeyboardInterrupt:
         stop_event.set()
-    except Exception as e:
-        log_error(f"Критическая ошибка в цикле мониторинга: {e}")
-        safe_display_state(display, DisplayState.ERROR, "Критическая\nошибка")
-        raise
     finally:
         log_info("Остановка мониторинга...")
-
-        if is_door_open:
-            log_info("Закрытие замка перед выходом...")
-            lock_controller.lock()
-            maintenance.door_open.clear()
-
-        safe_display_state(display, DisplayState.STANDBY, "Мониторинг\nостановлен")
+        if not engine.close():
+            log_error("Не удалось подтвердить закрытие замка при остановке")
+            safe_display_state(display, DisplayState.ERROR, "Ошибка закрытия\nзамка")
+        else:
+            safe_display_state(display, DisplayState.STANDBY, "Мониторинг\nостановлен")
         log_info("Мониторинг остановлен")
 
 
