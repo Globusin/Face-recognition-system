@@ -8,7 +8,8 @@ sys.path.append(str(Path(__file__).parent.parent))
 
 from utils.authentication import AuthenticationEngine, AuthenticationState
 from utils.recognition import recognize_face_from_camera
-from utils.video_capture import wait_for_face
+from utils.camera_manager import get_camera_manager, stop_camera_manager
+from utils.face_observations import FaceObservationSource, ObservationRejected
 from utils.lock_controller import initialize_lock_controller
 from utils.display import initialize_display, DisplayState
 from utils.config_loader import load_config
@@ -99,15 +100,28 @@ def run_monitoring(stop_event=None):
             try:
                 with maintenance.recognition():
                     safe_display_state(display, DisplayState.STANDBY, "Подойдите\nк камере")
-                    if not wait_for_face(
-                        stop_event,
+                    source = FaceObservationSource(
+                        get_camera_manager(), stop_event, maintenance.requested,
+                        settings.get('capture', {}),
+                    )
+                    observation = source.wait_for_face(
                         on_wait=lambda: safe_display_state(display, DisplayState.STANDBY),
-                        cancel_event=maintenance.requested,
-                    ):
-                        continue
-                    session_id = engine.begin()
+                    )
+                    session_id = engine.begin(observation.track_id)
                     if session_id is not None:
-                        engine.evaluate(session_id, recognize_face_from_camera)
+                        def recognize_current_track():
+                            try:
+                                return recognize_face_from_camera(
+                                    observation_source=source,
+                                    deadline=engine.session.deadline,
+                                )
+                            except ObservationRejected as error:
+                                engine.cancel(str(error))
+                                return False, None, None
+
+                        engine.evaluate(session_id, recognize_current_track)
+            except ObservationRejected:
+                continue
             except Exception as error:
                 if maintenance.requested.is_set():
                     engine.cancel('maintenance')
@@ -128,4 +142,7 @@ def run_monitoring(stop_event=None):
 
 
 if __name__ == "__main__":
-    run_monitoring()
+    try:
+        run_monitoring()
+    finally:
+        stop_camera_manager()

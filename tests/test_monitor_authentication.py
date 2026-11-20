@@ -6,6 +6,7 @@ from unittest.mock import Mock, patch
 
 from src.monitor import run_monitoring
 from utils.maintenance import MaintenanceMode
+from utils.face_observations import ObservationRejected
 
 
 class MonitorAuthenticationTests(unittest.TestCase):
@@ -16,13 +17,13 @@ class MonitorAuthenticationTests(unittest.TestCase):
         lock.unlock.return_value = True
         lock.lock.return_value = True
         display = Mock()
-        def recognition():
+        def recognition(**kwargs):
             return recognize(stop, mode)
         with patch('src.monitor.load_config', return_value={}), \
                 patch('src.monitor.initialize_lock_controller', return_value=lock), \
                 patch('src.monitor.initialize_display', return_value=display), \
                 patch('src.monitor.maintenance', mode), \
-                patch('src.monitor.wait_for_face', return_value=True), \
+                patch('src.monitor.FaceObservationSource'), \
                 patch('src.monitor.recognize_face_from_camera', side_effect=recognition), \
                 patch('src.monitor.wait_or_stop', side_effect=lambda event, seconds: event.set()):
             run_monitoring(stop)
@@ -48,6 +49,13 @@ class MonitorAuthenticationTests(unittest.TestCase):
             return True, 4, 0.1
         lock, _, _ = self.run_monitor(recognize)
         lock.unlock.assert_not_called()
+
+    def test_lost_track_prevents_unlock(self):
+        def recognize(stop, mode):
+            raise ObservationRejected('face_lost')
+        lock, _, _ = self.run_monitor(recognize)
+        lock.unlock.assert_not_called()
+        lock.lock.assert_called_once()
 
     def test_processing_exception_prevents_unlock(self):
         def recognize(stop, mode):

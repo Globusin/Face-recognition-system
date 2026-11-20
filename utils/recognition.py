@@ -314,8 +314,24 @@ def recognize_face_from_embeddings_series(embeddings_series):
     return True, user_id, average_distance
 
 @measure_time("Полное распознавание с камеры", summary=True)
-def recognize_face_from_camera():
+def recognize_face_from_camera(observation_source=None, deadline=None):
     """Распознает лицо с камеры и проверяет его наличие в базе данных"""
     frames_count, _, frame_delay, _ = get_multi_frame_recognition_config()
-    embeddings_series = create_embeddings_series_from_camera(frames_count, frame_delay)
-    return recognize_face_from_embeddings_series(embeddings_series)
+    if observation_source is None:
+        embeddings_series = create_embeddings_series_from_camera(frames_count, frame_delay)
+        return recognize_face_from_embeddings_series(embeddings_series)
+
+    embeddings_series = []
+    for observation in observation_source.observations(frames_count, frame_delay, deadline):
+        embeddings = get_embeddings_from_frame(
+            observation.primary.image, observation.face_box,
+        )
+        observation_source.check_cancelled(deadline)
+        if embeddings is not None and len(embeddings):
+            embeddings_series.append(embeddings[0])
+    result = recognize_face_from_embeddings_series(embeddings_series)
+    observation_source.check_cancelled(deadline)
+    # Поиск в БД мог занять время, поэтому перед допуском проверяем новый кадр
+    if result[0]:
+        observation_source.next(deadline)
+    return result

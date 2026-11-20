@@ -163,7 +163,7 @@ class CalibrationApiTests(unittest.TestCase):
         gate = MaintenanceMode()
         stop = threading.Event()
 
-        def recognize():
+        def recognize(**kwargs):
             gate.requested.set()
             stop.set()
             return True, 1, 0.01
@@ -171,7 +171,7 @@ class CalibrationApiTests(unittest.TestCase):
         with patch('src.monitor.maintenance', gate), \
                 patch('src.monitor.initialize_display'), \
                 patch('src.monitor.initialize_lock_controller') as initialize, \
-                patch('src.monitor.wait_for_face', return_value=True), \
+                patch('src.monitor.FaceObservationSource'), \
                 patch('src.monitor.recognize_face_from_camera', side_effect=recognize):
             run_monitoring(stop)
         initialize.return_value.unlock.assert_not_called()

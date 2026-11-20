@@ -214,17 +214,18 @@ class CameraReader:
         with self.condition:
             self.condition.notify_all()
 
-    def get_frame(self, after_sequence=0, timeout=1.0):
+    def get_frame(self, after_sequence=0, timeout=1.0, latest=False):
+        """Ждёт новый кадр; latest пропускает очередь накопленных изображений"""
         deadline = time.monotonic() + timeout
 
         with self.condition:
             while True:
-                for frame in self.frames:
-                    if frame.sequence > after_sequence:
-                        return frame
-
                 if self.error or self.stop_event.is_set():
                     return None
+                candidates = reversed(self.frames) if latest else self.frames
+                for frame in candidates:
+                    if frame.sequence > after_sequence:
+                        return frame
 
                 remaining = deadline - time.monotonic()
                 if remaining <= 0:
@@ -245,6 +246,8 @@ class CameraReader:
                     return None
                 self.condition.wait(remaining)
 
+            if self.error or self.stop_event.is_set():
+                return None
             return self.frames[-1]
 
     def stop(self):
@@ -416,13 +419,13 @@ class CameraManager:
 
         raise CameraUnavailableError(f"Камера {role} не найдена или не открылась")
 
-    def get_frame(self, role='primary', after_sequence=0, timeout=1.0):
+    def get_frame(self, role='primary', after_sequence=0, timeout=1.0, latest=False):
         self.start(require_secondary=(role == 'secondary'))
         self._check_required_cameras()
         reader = self.readers.get(role)
         if reader is None:
             return None
-        frame = reader.get_frame(after_sequence, timeout)
+        frame = reader.get_frame(after_sequence, timeout, latest=latest)
         self._check_required_cameras()
         return frame
 
@@ -441,10 +444,10 @@ class CameraManager:
         reader = self.readers.get(role)
         return reader.sequence if reader else 0
 
-    def get_pair(self, after_number=0, timeout=1.0):
+    def get_pair(self, after_number=0, timeout=1.0, latest=False):
         self.start(require_secondary=True)
         self._check_required_cameras(require_secondary=True)
-        pair = self.pairer.wait_for_pair(after_number, timeout)
+        pair = self.pairer.wait_for_pair(after_number, timeout, latest=latest)
         self._check_required_cameras(require_secondary=True)
         return pair
 

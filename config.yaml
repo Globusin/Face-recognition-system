@@ -134,3 +134,8 @@ logging:
 # Лимит сессии, включая блокирующее распознавание серии кадров.
 authentication:
   session_timeout_seconds: 20.0
+  capture:
+    max_frame_age_seconds: 0.5
+    frame_wait_seconds: 1.0
+    max_track_gap_seconds: 2.0
+    min_track_overlap: 0.25  # Начальный порог IoU, требует проверки на стенде

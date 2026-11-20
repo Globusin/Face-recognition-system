@@ -97,14 +97,15 @@ class FramePairer:
         else:
             self.dropped_secondary += 1
 
-    def wait_for_pair(self, after_number=0, timeout=1.0) -> Optional[FramePair]:
+    def wait_for_pair(self, after_number=0, timeout=1.0, latest=False) -> Optional[FramePair]:
         """Ждёт пару с номером больше after_number и не возвращает старые пары"""
         # Монотонное время не зависит от перевода системных часов
         deadline = time.monotonic() + timeout
 
         with self.condition:
             while True:
-                for pair in self.pairs:
+                candidates = reversed(self.pairs) if latest else self.pairs
+                for pair in candidates:
                     if pair.number > after_number:
                         return pair
 
