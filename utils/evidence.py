@@ -218,6 +218,10 @@ class IdentityEvidence:
         frames = self.frame_count
         if not frames:
             return EvidenceDecision(FAIL, 'no_frames', frames=0)
+        # Попытка, оборванная по времени или потере трека, не даёт права
+        # на вывод даже при высоком score: минимум кадров обязателен для любого решения
+        if frames < self.min_frames:
+            return EvidenceDecision(FAIL, 'insufficient_frames', frames=frames)
 
         leader, score = self.best()
         if leader is None:

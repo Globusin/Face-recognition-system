@@ -102,10 +102,22 @@ class IdentityEvidenceTests(unittest.TestCase):
     def test_insufficient_matches_fail(self):
         evidence = make_evidence()
         add_frames(evidence, 1, 0.10, 2)
+        evidence.add(None, None)
 
         decision = evidence.result()
         self.assertEqual(decision.status, FAIL)
         self.assertEqual(decision.reason, 'insufficient_matches')
+
+    def test_result_requires_min_frames(self):
+        # min_successful_frames ниже min_frames: без общей проверки набор прошёл бы
+        evidence = make_evidence(
+            min_frames=5, min_successful_frames=2, correlation_discount=1.0,
+        )
+        add_frames(evidence, 1, 0.02, 3)
+
+        decision = evidence.result()
+        self.assertEqual(decision.status, FAIL)
+        self.assertEqual(decision.reason, 'insufficient_frames')
 
     def test_no_matches_fail_and_impossible_attempt_stops_early(self):
         evidence = make_evidence()
