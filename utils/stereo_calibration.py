@@ -305,6 +305,24 @@ def annotated_preview(image, corners):
     return 'data:image/jpeg;base64,' + base64.b64encode(jpeg).decode('ascii')
 
 
+def camera_signature(manager):
+    """Устройства и режимы камер, к которым привязана калибровка"""
+    status = manager.get_status()
+    if not status['started'] or any(
+        status['cameras'][role]['status'] != 'online' for role in ('primary', 'secondary')
+    ):
+        raise ValueError('Обе камеры должны работать в выбранном режиме')
+
+    return {
+        role: dict(device=str(manager.sources.get(role)),
+                   width=status['cameras'][role]['width'],
+                   height=status['cameras'][role]['height'],
+                   format=status['cameras'][role]['reported_format'],
+                   fps=status['cameras'][role]['reported_fps'])
+        for role in ('primary', 'secondary')
+    }
+
+
 class CalibrationSession:
     def __init__(self):
         self.lock = threading.RLock()
@@ -371,20 +389,7 @@ class CalibrationSession:
             raise ValueError('Сессия калибровки неактивна или устарела')
 
     def _camera_signature(self, manager):
-        status = manager.get_status()
-        if not status['started'] or any(
-            status['cameras'][role]['status'] != 'online' for role in ('primary', 'secondary')
-        ):
-            raise ValueError('Обе камеры должны работать в выбранном режиме')
-
-        return {
-            role: dict(device=str(manager.sources.get(role)),
-                       width=status['cameras'][role]['width'],
-                       height=status['cameras'][role]['height'],
-                       format=status['cameras'][role]['reported_format'],
-                       fps=status['cameras'][role]['reported_fps'])
-            for role in ('primary', 'secondary')
-        }
+        return camera_signature(manager)
 
     def observe(self, session_id, rotation, prepare_preview=True, durations=None, max_search_width=None):
         with self.lock:

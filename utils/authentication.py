@@ -43,6 +43,7 @@ class AuthenticationSession:
     user_id: Optional[int] = None
     distance: Optional[float] = None
     checks: dict = field(default_factory=dict)
+    diagnostics: dict = field(default_factory=dict)
     reason: str = ''
     finished_at: Optional[float] = None
     unlock_attempted: bool = False
