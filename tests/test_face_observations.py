@@ -123,8 +123,9 @@ class FaceObservationTests(unittest.TestCase):
         source = Mock()
         source.observations.return_value = iter([])
         source.next.side_effect = ObservationRejected('face_lost')
-        with patch('utils.recognition.recognize_face_from_embeddings_series',
-                   return_value=(True, 7, 0.1)):
+        with patch('utils.recognition.get_recognition_mode', return_value='fixed'), \
+                patch('utils.recognition.recognize_face_from_embeddings_series',
+                      return_value=(True, 7, 0.1)):
             with self.assertRaisesRegex(ObservationRejected, 'face_lost'):
                 recognize_face_from_camera(source, 110)
 
@@ -155,7 +156,8 @@ class FaceObservationTests(unittest.TestCase):
         observation = SimpleNamespace(primary=self.frame(1), face_box=(10, 10, 40, 40))
         source = Mock()
         source.observations.return_value = iter([observation])
-        with patch('utils.recognition.get_embeddings_from_frame', return_value=[[1]]) as embed, \
+        with patch('utils.recognition.get_recognition_mode', return_value='fixed'), \
+                patch('utils.recognition.get_embeddings_from_frame', return_value=[[1]]) as embed, \
                 patch('utils.recognition.recognize_face_from_embeddings_series',
                       return_value=(True, 7, 0.1)) as score:
             result = recognize_face_from_camera(source, 110)

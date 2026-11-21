@@ -2,14 +2,15 @@ import face_recognition
 import math
 import cv2
 import sys
+import time
 from pathlib import Path
-from collections import Counter, defaultdict
 
 sys.path.append(str(Path(__file__).parent.parent))
 
 from utils.video_capture import capture_face_frames, detect_faces
 from utils.db_connect import *
 from utils.config_loader import load_config
+from utils.evidence import PASS, IdentityEvidence
 from utils.logger import log_debug, log_error, log_info, log_warning
 from utils.timing import measure_time
 
@@ -132,15 +133,55 @@ def get_multi_frame_recognition_config():
     
     return frames_count, min_successful_frames, frame_delay, max_distance_std
 
+def get_recognition_mode():
+    """Режим решения: адаптивное накопление свидетельств или фиксированная серия"""
+    mode = str(
+        config.get('multi_frame_recognition', {}).get('mode', 'fixed')
+    ).strip().lower()
+    if mode not in ('fixed', 'adaptive'):
+        raise ValueError(f'Неизвестный режим распознавания: {mode}')
+    return mode
+
+def get_adaptive_recognition_config():
+    """Параметры адаптивного накопления свидетельств"""
+    settings = config.get('adaptive_recognition', {})
+    min_frames = max(1, int(settings.get('min_frames', 3)))
+    max_frames = max(1, int(settings.get('max_frames', 7)))
+    min_successful_frames = max(1, int(settings.get('min_successful_frames', 3)))
+    frame_interval = max(0, float(settings.get('frame_interval_ms', 200)) / 1000)
+    early_stop_threshold = min(
+        max(float(settings.get('early_stop_threshold', 0.98)), 0.001), 1.0
+    )
+    max_attempt_duration = max(
+        0.001, float(settings.get('max_attempt_duration_s', 2.5))
+    )
+    max_distance_std = max(0, float(settings.get('max_distance_std', 0.05)))
+
+    if max_frames < min_frames:
+        raise ValueError('max_frames не может быть меньше min_frames')
+    if min_successful_frames > max_frames:
+        raise ValueError('min_successful_frames не может превышать max_frames')
+
+    return {
+        'min_frames': min_frames,
+        'max_frames': max_frames,
+        'min_successful_frames': min_successful_frames,
+        'frame_interval': frame_interval,
+        'early_stop_threshold': early_stop_threshold,
+        'max_attempt_duration': max_attempt_duration,
+        'max_distance_std': max_distance_std,
+    }
+
 def get_bayesian_scoring_config():
     bayesian_config = config.get('bayesian_scoring', {})
     enabled = bool(bayesian_config.get('enabled', True))
     prior_probability = float(bayesian_config.get('prior_probability', 0.2))
-    decision_threshold = float(bayesian_config.get('decision_threshold', 0.95))
+    decision_threshold = float(bayesian_config.get('decision_threshold', 0.98))
     distance_sigma = float(bayesian_config.get('distance_sigma', 0.08))
     unknown_likelihood = float(bayesian_config.get('unknown_likelihood', 0.05))
     miss_likelihood_ratio = float(bayesian_config.get('miss_likelihood_ratio', 0.4))
     minimum_likelihood = float(bayesian_config.get('minimum_likelihood', 0.000001))
+    correlation_discount = float(bayesian_config.get('correlation_discount', 0.4))
     
     prior_probability = min(max(prior_probability, 0.001), 0.999)
     decision_threshold = min(max(decision_threshold, 0.001), 0.999)
@@ -148,6 +189,7 @@ def get_bayesian_scoring_config():
     unknown_likelihood = max(unknown_likelihood, minimum_likelihood)
     miss_likelihood_ratio = max(miss_likelihood_ratio, minimum_likelihood)
     minimum_likelihood = max(minimum_likelihood, 0.000000001)
+    correlation_discount = min(max(correlation_discount, 0.001), 1.0)
     
     return {
         'enabled': enabled,
@@ -157,6 +199,7 @@ def get_bayesian_scoring_config():
         'unknown_likelihood': unknown_likelihood,
         'miss_likelihood_ratio': miss_likelihood_ratio,
         'minimum_likelihood': minimum_likelihood,
+        'correlation_discount': correlation_discount,
     }
 
 def create_embeddings_series_from_camera(frames_count, frame_delay):
@@ -176,153 +219,99 @@ def create_embeddings_series_from_camera(frames_count, frame_delay):
     
     return embeddings_series
 
-def calculate_distance_std(distances):
-    if len(distances) < 2:
-        return 0
-    
-    mean_distance = sum(distances) / len(distances)
-    variance = sum((distance - mean_distance) ** 2 for distance in distances) / len(distances)
-    return variance ** 0.5
+def match_embedding(embedding):
+    """Ищет ближайшего пользователя и применяет порог similarity
 
-def calculate_match_likelihood(distance, distance_sigma, minimum_likelihood):
-    likelihood = math.exp(-((distance ** 2) / (2 * (distance_sigma ** 2))))
-    return max(likelihood, minimum_likelihood)
+    Возвращает пару (user_id, distance). Если ближайший шаблон дальше порога,
+    кадр не подтверждает ни одного пользователя, но дистанция сохраняется
+    для диагностики
+    """
+    user_id, distance = find_nearest_user(embedding)
+    if user_id is None or distance is None:
+        return None, None
 
-def calculate_bayesian_user_scores(frame_matches, candidate_ids=None):
-    bayesian_config = get_bayesian_scoring_config()
-    if candidate_ids is None:
-        candidates = {
-            user_id
-            for user_id, distance in frame_matches
-            if user_id is not None and distance is not None
-        }
-    else:
-        candidates = set(candidate_ids)
-    
-    if not candidates:
-        return None, 0, {}
-    
-    prior_probability = bayesian_config['prior_probability']
-    prior_odds = prior_probability / (1 - prior_probability)
-    scores = {}
-    
-    for candidate_id in candidates:
-        log_odds = math.log(prior_odds)
-        
-        for user_id, distance in frame_matches:
-            if user_id == candidate_id and distance is not None:
-                likelihood = calculate_match_likelihood(
-                    distance,
-                    bayesian_config['distance_sigma'],
-                    bayesian_config['minimum_likelihood']
-                )
-                likelihood_ratio = likelihood / bayesian_config['unknown_likelihood']
-            else:
-                likelihood_ratio = bayesian_config['miss_likelihood_ratio']
-            
-            log_odds += math.log(max(likelihood_ratio, bayesian_config['minimum_likelihood']))
-        
-        posterior = 1 / (1 + math.exp(-log_odds))
-        scores[candidate_id] = posterior
-    
-    best_user_id = max(scores, key=scores.get)
-    return best_user_id, scores[best_user_id], scores
+    try:
+        distance = float(distance)
+    except (TypeError, ValueError):
+        log_warning("Поиск в базе вернул некорректную дистанцию")
+        return None, None
+    if not math.isfinite(distance) or distance < 0:
+        log_warning("Поиск в базе вернул некорректную дистанцию")
+        return None, None
+
+    if distance >= config.get('similarity', 0.15):
+        return None, distance
+    return user_id, distance
+
+def _create_evidence(*, min_frames, max_frames, min_successful_frames,
+                     max_distance_std, early_stop_threshold):
+    """Создаёт оценщик с общими параметрами скоринга и границами режима"""
+    bayesian = get_bayesian_scoring_config()
+    # Отключённый скоринг оставляет сравнение по числу кадров без порога score
+    decision_threshold = bayesian['decision_threshold'] if bayesian['enabled'] else None
+    return IdentityEvidence(
+        prior_probability=bayesian['prior_probability'],
+        distance_sigma=bayesian['distance_sigma'],
+        unknown_likelihood=bayesian['unknown_likelihood'],
+        miss_likelihood_ratio=bayesian['miss_likelihood_ratio'],
+        minimum_likelihood=bayesian['minimum_likelihood'],
+        correlation_discount=bayesian['correlation_discount'],
+        min_frames=min_frames,
+        max_frames=max_frames,
+        min_successful_frames=min_successful_frames,
+        max_distance_std=max_distance_std,
+        decision_threshold=decision_threshold,
+        early_stop_threshold=early_stop_threshold if bayesian['enabled'] else None,
+    )
+
+def _decision_result(decision):
+    """Переводит решение оценщика в контракт (успех, user_id, distance)"""
+    score_text = f"{decision.score:.4f}" if decision.score is not None else '-'
+    log_info(
+        f"Свидетельства идентичности: кадров={decision.frames}, score={score_text}, "
+        f"решение={decision.status}, причина={decision.reason or '-'}"
+    )
+    if decision.status == PASS:
+        return True, decision.user_id, decision.distance
+    return False, None, None
+
+def _confirm_fresh_after_database(observation_source, deadline, result):
+    """Перед допуском проверяет новый кадр: поиск в БД мог занять время"""
+    observation_source.check_cancelled(deadline)
+    if result[0]:
+        observation_source.next(deadline)
+    return result
 
 @recognition_db_session()
 def recognize_face_from_embeddings_series(embeddings_series):
-    """Принимает решение по нескольким кадрам вместо одного."""
+    """Фиксированный режим: решение по заранее собранной серии кадров
+
+    Использует ту же математику, что и адаптивный режим, но без ранней
+    остановки: все кадры серии обрабатываются всегда
+    """
     if not embeddings_series:
         log_warning("Не удалось получить эмбэддинги с серии кадров")
         return False, None, None
-    
-    _, min_successful_frames, _, max_distance_std = get_multi_frame_recognition_config()
-    bayesian_config = get_bayesian_scoring_config()
-    successful_matches = []
-    distances_by_user = defaultdict(list)
-    frame_matches = []
-    
+
+    frames_count, min_successful_frames, _, max_distance_std = \
+        get_multi_frame_recognition_config()
+    evidence = _create_evidence(
+        min_frames=frames_count,
+        max_frames=frames_count,
+        min_successful_frames=min_successful_frames,
+        max_distance_std=max_distance_std,
+        early_stop_threshold=1.0,
+    )
     for embedding in embeddings_series:
-        nearest_user_id, nearest_distance = find_nearest_user(embedding)
-        frame_matches.append((nearest_user_id, nearest_distance))
-        
-        is_known = (
-            nearest_user_id is not None
-            and nearest_distance is not None
-            and nearest_distance < config.get('similarity', 0.15)
-        )
-        
-        if is_known:
-            successful_matches.append(nearest_user_id)
-            distances_by_user[nearest_user_id].append(nearest_distance)
-    
-    if not successful_matches:
-        log_info("Серия кадров не дала ни одного успешного совпадения")
-        return False, None, None
-    
-    if bayesian_config['enabled']:
-        user_id, posterior_probability, bayesian_scores = calculate_bayesian_user_scores(
-            frame_matches,
-            set(successful_matches)
-        )
-    else:
-        user_id, posterior_probability, bayesian_scores = None, None, {}
-    
-    if user_id is None:
-        user_id, successful_frames = Counter(successful_matches).most_common(1)[0]
-    else:
-        successful_frames = successful_matches.count(user_id)
-    
-    user_distances = distances_by_user[user_id]
-    average_distance = sum(user_distances) / len(user_distances)
-    distance_std = calculate_distance_std(user_distances)
-    
-    posterior_text = (
-        f", bayesian_posterior={posterior_probability:.4f}"
-        if posterior_probability is not None
-        else ""
-    )
-    log_info(
-        "Распознавание по серии кадров: "
-        f"user_id={user_id}, успешных кадров={successful_frames}/{len(embeddings_series)}, "
-        f"средняя дистанция={average_distance:.4f}, std={distance_std:.4f}"
-        f"{posterior_text}"
-    )
-    if bayesian_scores:
-        log_debug(f"Байесовские оценки пользователей: {bayesian_scores}")
-    
-    if successful_frames < min_successful_frames:
-        log_warning(
-            f"Недостаточно стабильное распознавание: {successful_frames} успешных кадров "
-            f"из требуемых {min_successful_frames}"
-        )
-        return False, None, None
-    
-    if distance_std > max_distance_std:
-        log_warning(
-            f"Нестабильная дистанция распознавания: std={distance_std:.4f}, "
-            f"порог={max_distance_std:.4f}"
-        )
-        return False, None, None
-    
-    if bayesian_config['enabled'] and posterior_probability < bayesian_config['decision_threshold']:
-        log_warning(
-            f"Недостаточная байесовская уверенность: posterior={posterior_probability:.4f}, "
-            f"порог={bayesian_config['decision_threshold']:.4f}"
-        )
-        return False, None, None
-    
-    return True, user_id, average_distance
+        evidence.add(*match_embedding(embedding))
+    return _decision_result(evidence.result())
 
-@measure_time("Полное распознавание с камеры", summary=True)
-def recognize_face_from_camera(observation_source=None, deadline=None):
-    """Распознает лицо с камеры и проверяет его наличие в базе данных"""
+def _recognize_fixed(observation_source, deadline):
+    """Фиксированная серия кадров из наблюдений текущего трека"""
     frames_count, _, frame_delay, _ = get_multi_frame_recognition_config()
-    if observation_source is None:
-        embeddings_series = create_embeddings_series_from_camera(frames_count, frame_delay)
-        return recognize_face_from_embeddings_series(embeddings_series)
-
     embeddings_series = []
-    for observation in observation_source.observations(frames_count, frame_delay, deadline):
+    for observation in observation_source.observations(
+            frames_count, frame_delay, deadline):
         embeddings = get_embeddings_from_frame(
             observation.primary.image, observation.face_box,
         )
@@ -330,8 +319,57 @@ def recognize_face_from_camera(observation_source=None, deadline=None):
         if embeddings is not None and len(embeddings):
             embeddings_series.append(embeddings[0])
     result = recognize_face_from_embeddings_series(embeddings_series)
-    observation_source.check_cancelled(deadline)
-    # Поиск в БД мог занять время, поэтому перед допуском проверяем новый кадр
-    if result[0]:
-        observation_source.next(deadline)
-    return result
+    return _confirm_fresh_after_database(observation_source, deadline, result)
+
+def _recognize_adaptive(observation_source, deadline):
+    """Накопление свидетельств по одному кадру до решения или лимита попытки"""
+    settings = get_adaptive_recognition_config()
+    evidence = _create_evidence(
+        min_frames=settings['min_frames'],
+        max_frames=settings['max_frames'],
+        min_successful_frames=settings['min_successful_frames'],
+        max_distance_std=settings['max_distance_std'],
+        early_stop_threshold=settings['early_stop_threshold'],
+    )
+    clock = getattr(observation_source, 'clock', time.monotonic)
+    attempt_started = clock()
+    decision = None
+
+    # Одно соединение на попытку: поиск по базе выполняется для каждого кадра
+    with recognition_db_session():
+        for observation in observation_source.observations(
+                settings['max_frames'], settings['frame_interval'], deadline):
+            embeddings = get_embeddings_from_frame(
+                observation.primary.image, observation.face_box,
+            )
+            observation_source.check_cancelled(deadline)
+            if embeddings is not None and len(embeddings):
+                evidence.add(*match_embedding(embeddings[0]))
+                decision = evidence.early_decision()
+                if decision is not None:
+                    break
+            if clock() - attempt_started >= settings['max_attempt_duration']:
+                break
+
+    if decision is None:
+        decision = evidence.result()
+    result = _decision_result(decision)
+    return _confirm_fresh_after_database(observation_source, deadline, result)
+
+@measure_time("Полное распознавание с камеры", summary=True)
+def recognize_face_from_camera(observation_source=None, deadline=None):
+    """Распознаёт лицо с камеры и проверяет его наличие в базе данных
+
+    Без источника наблюдений используется прежний захват одиночной камеры:
+    адаптивный режим требует потока наблюдений от CameraManager
+    """
+    if observation_source is None:
+        frames_count, _, frame_delay, _ = get_multi_frame_recognition_config()
+        embeddings_series = create_embeddings_series_from_camera(
+            frames_count, frame_delay,
+        )
+        return recognize_face_from_embeddings_series(embeddings_series)
+
+    if get_recognition_mode() == 'fixed':
+        return _recognize_fixed(observation_source, deadline)
+    return _recognize_adaptive(observation_source, deadline)
