@@ -36,6 +36,19 @@ def wait_or_stop(stop_event, seconds):
     return stop_event.wait(seconds)
 
 
+def should_collect_stereo(state, session):
+    """Замер нужен для любого оценённого кадра, включая отказ
+
+    Отказ — это и есть отрицательный пример для калибровки PAD; выборка только
+    из допусков смещена и не покажет, как проверка ведёт себя на атаках.
+    Прерванные попытки без результата распознавания пропускаются: оценивать
+    геометрию по кадру, где лицо уже потеряно, бессмысленно.
+    """
+    return (session is not None
+            and state in (AuthenticationState.GRANTED, AuthenticationState.DENIED)
+            and 'recognition' in session.checks)
+
+
 def run_monitoring(stop_event=None):
     """
     Запускает непрерывный мониторинг камеры для распознавания лиц
@@ -146,7 +159,9 @@ def run_monitoring(stop_event=None):
                         # Замер уходит в отдельный поток: tick() и закрытие
                         # замка не должны ждать кадров и геометрии
                         if (stereo_collector is not None
-                                and engine.state == AuthenticationState.GRANTED):
+                                and should_collect_stereo(
+                                    engine.state, engine.session,
+                                )):
                             stereo_collector.submit(engine.session)
             except ObservationRejected:
                 continue

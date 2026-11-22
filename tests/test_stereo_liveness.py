@@ -7,7 +7,9 @@ from unittest.mock import Mock, patch
 
 import numpy as np
 
-from utils.authentication import AuthenticationSession
+from utils.authentication import (
+    AuthenticationSession, AuthenticationState, CheckResult, CheckStatus,
+)
 from utils.frame_pairing import CameraFrame, FramePair
 from utils.stereo_liveness import (
     LIVE,
@@ -231,6 +233,35 @@ class DiagnosticsTests(unittest.TestCase):
                 )
                 with self.assertRaisesRegex(ValueError, 'не совпадает'):
                     diagnostics.measure(self.pair)
+
+
+class CollectionConditionTests(unittest.TestCase):
+    """Замер собирается и при отказе: иначе выборка PAD смещена к успешным входам"""
+
+    def session(self, recognized=True):
+        session = AuthenticationSession('abc', 0.0, 0.0, 10.0)
+        if recognized:
+            session.checks['recognition'] = CheckResult(CheckStatus.FAIL)
+        return session
+
+    def test_evaluated_attempts_are_measured(self):
+        from src.monitor import should_collect_stereo
+        for state in (AuthenticationState.GRANTED, AuthenticationState.DENIED):
+            with self.subTest(state=state):
+                self.assertTrue(should_collect_stereo(state, self.session()))
+
+    def test_aborted_attempts_are_skipped(self):
+        from src.monitor import should_collect_stereo
+        self.assertFalse(
+            should_collect_stereo(AuthenticationState.DENIED, self.session(False))
+        )
+        self.assertFalse(
+            should_collect_stereo(AuthenticationState.ERROR, self.session())
+        )
+        self.assertFalse(
+            should_collect_stereo(AuthenticationState.COOLDOWN, self.session())
+        )
+        self.assertFalse(should_collect_stereo(AuthenticationState.GRANTED, None))
 
 
 class CollectorTests(unittest.TestCase):
