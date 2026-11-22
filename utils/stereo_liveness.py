@@ -5,9 +5,11 @@
 """
 
 import math
+import threading
 import time
 from pathlib import Path
 
+from utils.logger import log_error, log_info
 from utils.stereo_calibration import camera_signature, load_calibration
 from utils.two_view_pad import inspect_pair
 
@@ -272,3 +274,77 @@ class StereoLivenessDiagnostics:
 
         self._loaded = (metadata, arrays)
         return self._loaded
+
+
+class StereoDiagnosticsCollector:
+    """Снимок пары после решения и обработка в отдельном потоке
+
+    Замер не выполняется в основном цикле Monitor: там engine.tick() закрывает
+    замок, и любое ожидание кадров или геометрии продлевало бы открытие двери.
+    Одновременно выполняется не больше одной задачи, очередь не растёт. Пары
+    читаются из общего буфера FramePairer без изъятия, поэтому конкуренции
+    с основным циклом нет
+    """
+
+    def __init__(self, diagnostics, manager, settings, clock=time.monotonic):
+        self.diagnostics = diagnostics
+        self.manager = manager
+        self.timeout = settings['measurement_timeout']
+        self.clock = clock
+        self._lock = threading.Lock()
+        self._thread = None
+        self._closed = False
+        self.skipped = 0
+        self.completed = 0
+
+    def submit(self, session):
+        """Запускает замер, не дожидаясь кадров и вычислений"""
+        with self._lock:
+            if self._closed:
+                return False
+            if self._thread is not None and self._thread.is_alive():
+                # Пропуск лучше очереди: диагностика не должна отставать от попыток
+                self.skipped += 1
+                return False
+            self._thread = threading.Thread(
+                target=self._run, args=(session,),
+                name='stereo-diagnostics', daemon=True,
+            )
+            self._thread.start()
+            return True
+
+    def close(self, timeout=1.0):
+        """Останавливает приём задач и ждёт текущую не дольше таймаута"""
+        with self._lock:
+            self._closed = True
+            thread = self._thread
+        if thread is not None:
+            thread.join(timeout)
+
+    def _run(self, session):
+        started = self.clock()
+        try:
+            if not self.manager.dual_mode:
+                raise ValueError('Нужны две камеры')
+            after = self.manager.get_status()['pairing']['paired_frames']
+            pair = self.manager.get_pair(
+                after_number=after, timeout=self.timeout, latest=True,
+            )
+            if pair is None:
+                raise ValueError('Не удалось получить свежую пару кадров')
+            result = self.diagnostics.measure(pair)
+        except Exception as error:
+            log_error(f"Стерео-диагностика недоступна: {error}")
+            result = dict(
+                decision=UNKNOWN, status='not_measured', reason=str(error),
+                diagnostic_only=True, access_granted=False, timing_verified=False,
+            )
+        result['worker_elapsed_seconds'] = self.clock() - started
+        session.diagnostics['stereo'] = result
+        with self._lock:
+            self.completed += 1
+        log_info(
+            f"Стерео-диагностика: решение={result['decision']}, "
+            f"причина={result.get('reason') or '-'}, "
+            f"время {result['worker_elapsed_seconds']:.2f} с"
+        )

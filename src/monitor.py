@@ -2,7 +2,6 @@
 # -*- coding: utf-8 -*-
 import sys
 import threading
-import time
 from pathlib import Path
 
 sys.path.append(str(Path(__file__).parent.parent))
@@ -16,7 +15,9 @@ from utils.display import initialize_display, DisplayState
 from utils.config_loader import load_config
 from utils.logger import log_info, log_error, log_warning
 from utils.maintenance import maintenance
-from utils.stereo_liveness import StereoLivenessDiagnostics, UNKNOWN, liveness_settings
+from utils.stereo_liveness import (
+    StereoDiagnosticsCollector, StereoLivenessDiagnostics, liveness_settings,
+)
 from utils.two_view_pad import measurement_limits
 
 
@@ -33,34 +34,6 @@ def safe_display_state(display, state: DisplayState, detail: str = None) -> None
 def wait_or_stop(stop_event, seconds):
     """Ждёт указанное время и позволяет быстро остановить монитор"""
     return stop_event.wait(seconds)
-
-
-def record_stereo_diagnostics(diagnostics, source, engine, settings):
-    """Диагностический замер объёма лица после решения
-
-    На допуск не влияет и не должен прерывать мониторинг: любая ошибка
-    превращается в UNKNOWN и записывается в сессию
-    """
-    session = engine.session
-    if session is None:
-        return
-    try:
-        deadline = time.monotonic() + settings['measurement_timeout']
-        observation = source.next(deadline)
-        if observation is None or observation.pair is None:
-            raise ValueError('Нужны две камеры: пара кадров не получена')
-        result = diagnostics.measure(observation.pair)
-    except Exception as error:
-        log_error(f"Стерео-диагностика недоступна: {error}")
-        result = dict(
-            decision=UNKNOWN, status='not_measured', reason=str(error),
-            diagnostic_only=True, access_granted=False, timing_verified=False,
-        )
-    session.diagnostics['stereo'] = result
-    log_info(
-        f"Стерео-диагностика: решение={result['decision']}, "
-        f"причина={result.get('reason') or '-'}"
-    )
 
 
 def run_monitoring(stop_event=None):
@@ -110,15 +83,19 @@ def run_monitoring(stop_event=None):
         on_state=show_authentication_state,
     )
 
-    liveness = None
-    stereo_diagnostics = None
+    stereo_collector = None
     try:
         liveness = liveness_settings(config)
         if liveness['enabled']:
-            stereo_diagnostics = StereoLivenessDiagnostics(
+            stereo_collector = StereoDiagnosticsCollector(
+                StereoLivenessDiagnostics(
+                    get_camera_manager(), liveness,
+                    config.get('stereo_calibration', {}).get(
+                        'output_dir', 'data/calibration',
+                    ),
+                    measurement_limits(config.get('stereo_pad', {})),
+                ),
                 get_camera_manager(), liveness,
-                config.get('stereo_calibration', {}).get('output_dir', 'data/calibration'),
-                measurement_limits(config.get('stereo_pad', {})),
             )
     except ValueError as error:
         # Диагностика не должна мешать работе монитора
@@ -166,11 +143,11 @@ def run_monitoring(stop_event=None):
                                 return False, None, None
 
                         engine.evaluate(session_id, recognize_current_track)
-                        if (stereo_diagnostics is not None
+                        # Замер уходит в отдельный поток: tick() и закрытие
+                        # замка не должны ждать кадров и геометрии
+                        if (stereo_collector is not None
                                 and engine.state == AuthenticationState.GRANTED):
-                            record_stereo_diagnostics(
-                                stereo_diagnostics, source, engine, liveness,
-                            )
+                            stereo_collector.submit(engine.session)
             except ObservationRejected:
                 continue
             except Exception as error:
@@ -184,11 +161,14 @@ def run_monitoring(stop_event=None):
         stop_event.set()
     finally:
         log_info("Остановка мониторинга...")
+        # Замок закрывается первым: ожидание диагностики не должно его задерживать
         if not engine.close():
             log_error("Не удалось подтвердить закрытие замка при остановке")
             safe_display_state(display, DisplayState.ERROR, "Ошибка закрытия\nзамка")
         else:
             safe_display_state(display, DisplayState.STANDBY, "Мониторинг\nостановлен")
+        if stereo_collector is not None:
+            stereo_collector.close()
         log_info("Мониторинг остановлен")
 
 
