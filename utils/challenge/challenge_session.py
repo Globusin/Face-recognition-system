@@ -4,17 +4,17 @@ import threading
 import time
 import uuid
 import json
-from pathlib import Path
 from datetime import datetime, timezone
 
-from utils.camera_manager import get_camera_manager
-from utils.config_loader import load_config
-from utils.display import DisplayState, NullDisplay
-from utils.challenge_response import COMMANDS, ChallengeFlow, challenge_settings, observe_face
-from utils.maintenance import maintenance
-from utils.stereo_calibration import calibration_session, write_json
-from utils.logger import log_info, log_error
-from utils.timing import measure_time
+from utils.capture.camera_manager import get_camera_manager
+from utils.common.config_loader import load_config
+from utils.device.display import DisplayState, NullDisplay
+from utils.challenge.challenge_response import COMMANDS, ChallengeFlow, challenge_settings, observe_face
+from utils.common.maintenance import maintenance
+from utils.stereo.stereo_calibration import calibration_session, write_json
+from utils.common.logger import log_info, log_error
+from utils.common.timing import measure_time
+from utils.paths import PROJECT_ROOT
 
 
 class ChallengeSession:
@@ -179,7 +179,7 @@ class ChallengeSession:
                               timing_kind='sampled_threshold_crossings_not_true_motion_onset',
                               prompt_timestamp_source='display_call_completed_not_physical_display_measurement')
                 try:
-                    folder = Path(__file__).resolve().parent.parent / 'data' / 'challenge_checks'
+                    folder = PROJECT_ROOT / 'data' / 'challenge_checks'
                     folder.mkdir(parents=True, exist_ok=True)
                     write_json(folder / f'{self.session_id}.json', report)
                     log_info(f'Проверка заданий: сохранён отчёт {self.session_id}.json')

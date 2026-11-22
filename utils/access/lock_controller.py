@@ -2,7 +2,7 @@ import logging
 import time
 from typing import Optional
 
-from utils.logger import log_info, log_error, log_debug
+from utils.common.logger import log_info, log_error, log_debug
 
 class LockController:
     """Класс для управления механическим замком"""

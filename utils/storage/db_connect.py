@@ -1,15 +1,13 @@
+import sys
+
 import psycopg
 import numpy as np
-import sys
-from pathlib import Path
 from contextlib import ExitStack, contextmanager
 from contextvars import ContextVar
 
-sys.path.append(str(Path(__file__).parent.parent))
-
-from utils.config_loader import load_config
-from utils.logger import log_info, log_debug, log_error
-from utils.timing import measure_time
+from utils.common.config_loader import load_config
+from utils.common.logger import log_info, log_debug, log_error
+from utils.common.timing import measure_time
 
 _recognition_session = ContextVar('recognition_db_session', default=None)
 

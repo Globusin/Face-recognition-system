@@ -6,13 +6,12 @@ import ipaddress
 import os
 import time
 import threading
-from pathlib import Path
 
 from flask import jsonify, request, session
 
-from utils.config_loader import load_config
+from utils.common.config_loader import load_config
+from utils.paths import PROJECT_ROOT
 
-PROJECT_DIR = Path(__file__).resolve().parent.parent
 _failures = {}
 _failure_lock = threading.Lock()
 
@@ -43,7 +42,7 @@ def admin_token():
     token = os.environ.get('CALIBRATION_ADMIN_TOKEN') or config.get('stereo_calibration', {}).get('admin_token')
     if token:
         return token if isinstance(token, str) else ''
-    path = PROJECT_DIR / config.get('security', {}).get('admin_token_file', 'data/security/admin-token')
+    path = PROJECT_ROOT / config.get('security', {}).get('admin_token_file', 'data/security/admin-token')
     try:
         return path.read_text(encoding='utf-8').strip()
     except OSError:

@@ -6,8 +6,8 @@ from dataclasses import dataclass, field
 
 import cv2
 import numpy as np
-from utils.stereo_timing import record_duration
-from utils.head_pose import estimate_head_pose
+from utils.common.timing import record_duration
+from utils.face.head_pose import estimate_head_pose
 from copy import deepcopy
 
 

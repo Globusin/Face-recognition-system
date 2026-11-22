@@ -7,7 +7,7 @@ from unittest.mock import patch
 import cv2
 import numpy as np
 
-from utils.face_detection_preview import FaceDetectionPreview
+from utils.capture.face_detection_preview import FaceDetectionPreview
 from src.app import app
 
 
@@ -33,10 +33,10 @@ class FaceDetectionPreviewTests(unittest.TestCase):
         self.assertEqual(self.preview.last_positive['sequence'], 12)
 
     def test_expiration_and_empty_detections(self):
-        with patch('utils.face_detection_preview.time.monotonic', return_value=100):
+        with patch('utils.capture.face_detection_preview.time.monotonic', return_value=100):
             self.preview.enable()
             self.preview.record(self.frame, [(30, 50, 40, 40)], 'SEARCH')
-        with patch('utils.face_detection_preview.time.monotonic', return_value=111):
+        with patch('utils.capture.face_detection_preview.time.monotonic', return_value=111):
             image = self.preview.render(self.current)
             np.testing.assert_array_equal(image[110, 150], [180, 180, 180])
             self.preview.record(self.current, [], 'SERIES')
@@ -54,7 +54,7 @@ class FaceDetectionPreviewTests(unittest.TestCase):
                 patch('src.app.maintenance.requested.is_set', return_value=True), \
                 patch('src.app.frame_preview_limit.retry_after', return_value=0), \
                 patch('src.app.get_camera_manager') as manager, \
-                patch('utils.video_capture.detect_faces') as detect:
+                patch('utils.capture.video_capture.detect_faces') as detect:
             manager.return_value.get_latest_frame.return_value = self.current
             client = app.test_client()
             result = client.get('/api/cameras/primary/frame?haar=1')

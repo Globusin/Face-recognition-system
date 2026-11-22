@@ -9,9 +9,10 @@ from pathlib import Path
 
 import cv2
 
-from utils.config_loader import load_config
-from utils.frame_pairing import CameraFrame, FramePairer
-from utils.logger import log_error, log_info, log_warning
+from utils.common.config_loader import load_config
+from utils.capture.frame_pairing import CameraFrame, FramePairer
+from utils.common.logger import log_error, log_info, log_warning
+from utils.paths import PROJECT_ROOT
 
 try:
     import fcntl
@@ -616,7 +617,7 @@ def get_public_camera_status():
     )
     report_path = Path(report_name)
     if not report_path.is_absolute():
-        report_path = Path(__file__).parent.parent / report_path
+        report_path = PROJECT_ROOT / report_path
 
     try:
         report = json.loads(report_path.read_text(encoding='utf-8'))

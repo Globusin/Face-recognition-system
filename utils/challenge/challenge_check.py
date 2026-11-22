@@ -6,14 +6,14 @@
 
 import time
 
-from utils.authentication import CheckResult, CheckStatus
-from utils.camera_manager import CameraUnavailableError
-from utils.challenge_response import (
+from utils.access.authentication import CheckResult, CheckStatus
+from utils.capture.camera_manager import CameraUnavailableError
+from utils.challenge.challenge_response import (
     COMMANDS, ChallengeFlow, challenge_settings, observe_face,
 )
-from utils.display import DisplayState, NullDisplay
-from utils.face_observations import ObservationRejected
-from utils.logger import log_warning
+from utils.device.display import DisplayState, NullDisplay
+from utils.face.face_observations import ObservationRejected
+from utils.common.logger import log_warning
 
 POLICIES = ('disabled', 'adaptive', 'always')
 DEFAULT_ADAPTIVE_DISTANCE = 0.12

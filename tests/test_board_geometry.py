@@ -9,7 +9,7 @@ from pathlib import Path
 import cv2
 import numpy as np
 
-from utils.stereo_calibration import CalibrationSession, board_points, measure_board_geometry, validate_square_mm
+from utils.stereo.stereo_calibration import CalibrationSession, board_points, measure_board_geometry, validate_square_mm
 
 
 class BoardGeometryTests(unittest.TestCase):
@@ -49,7 +49,7 @@ class BoardGeometryTests(unittest.TestCase):
             with self.assertRaises(ValueError):
                 validate_square_mm(value)
         session = CalibrationSession()
-        with patch('utils.stereo_calibration.maintenance.begin'):
+        with patch('utils.stereo.stereo_calibration.maintenance.begin'):
             self.assertEqual(session.start(20)['square_mm'], 20)
         self.assertEqual(session.square_mm, 20)
 
@@ -68,11 +68,11 @@ class BoardGeometryTests(unittest.TestCase):
                                'corners': {'primary': self.primary, 'secondary': self.secondary}}
         with tempfile.TemporaryDirectory() as root, \
                 patch.object(session, '_root', return_value=Path(root)), \
-                patch('utils.stereo_calibration.calibration_fingerprint', return_value='test-fingerprint'), \
-                patch('utils.stereo_calibration.Path.read_bytes', return_value=b'test-parameters'), \
+                patch('utils.stereo.stereo_calibration.calibration_fingerprint', return_value='test-fingerprint'), \
+                patch('utils.stereo.stereo_calibration.Path.read_bytes', return_value=b'test-parameters'), \
                 patch.object(session, '_camera_signature', return_value=session.signature), \
-                patch('utils.stereo_calibration.get_camera_manager'), \
-                patch('utils.stereo_calibration.load_calibration', return_value=(
+                patch('utils.stereo.stereo_calibration.get_camera_manager'), \
+                patch('utils.stereo.stereo_calibration.load_calibration', return_value=(
                     {'image_size': [1280, 720], 'units': 'mm', 'board': [7, 7], 'square_mm': 45}, self.arrays)) as load:
             result = session.verify_observation('new-session', 'new-pair', 'a' * 32, True, True)
             self.assertLess(result['geometry']['max_error_mm'], 0.001)

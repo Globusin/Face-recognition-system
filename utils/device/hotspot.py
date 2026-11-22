@@ -3,7 +3,7 @@ import re
 import sys
 import logging
 
-from utils.logger import log_info, log_warning, log_error, log_debug
+from utils.common.logger import log_info, log_warning, log_error, log_debug
 
 # Настройка логирования
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')

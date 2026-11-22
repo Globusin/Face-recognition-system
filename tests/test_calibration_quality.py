@@ -10,8 +10,8 @@ from unittest.mock import patch
 
 import numpy as np
 
-from utils.calibration_quality import measure_planarity, measure_depth_stability
-from utils.stereo_calibration import CalibrationSession, board_points
+from utils.stereo.calibration_quality import measure_planarity, measure_depth_stability
+from utils.stereo.stereo_calibration import CalibrationSession, board_points
 
 
 class QualityTests(unittest.TestCase):
@@ -63,11 +63,11 @@ class QualityTests(unittest.TestCase):
                 patch.object(session, '_root', return_value=Path(root)), \
                 patch.object(session, 'verify_observation'), \
                 patch.object(session, 'observe', side_effect=observe), \
-                patch('utils.stereo_calibration.load_calibration', return_value=({}, {})), \
-                patch('utils.stereo_calibration.triangulate_board', return_value=(self.points, [])), \
-                patch('utils.stereo_calibration.time.perf_counter',
+                patch('utils.stereo.stereo_calibration.load_calibration', return_value=({}, {})), \
+                patch('utils.stereo.stereo_calibration.triangulate_board', return_value=(self.points, [])), \
+                patch('utils.stereo.stereo_calibration.time.perf_counter',
                       side_effect=iter((0, 26, 27)) if mode == 'timeout' else time.perf_counter), \
-                patch('utils.stereo_calibration.time.sleep'):
+                patch('utils.stereo.stereo_calibration.time.sleep'):
             if mode == 'ok':
                 result = session.measure_quality('test-session', 'snapshot', 'a' * 32, True, True, True)
                 self.assertEqual(result['quality']['frames'], 10)

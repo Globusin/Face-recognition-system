@@ -5,8 +5,8 @@ import unittest
 from unittest.mock import Mock, patch
 
 from src.monitor import run_monitoring
-from utils.maintenance import MaintenanceMode
-from utils.face_observations import ObservationRejected
+from utils.common.maintenance import MaintenanceMode
+from utils.face.face_observations import ObservationRejected
 
 
 class MonitorAuthenticationTests(unittest.TestCase):

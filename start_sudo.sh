@@ -40,7 +40,7 @@ if ! systemctl is-active --quiet postgresql; then
 fi
 
 # Создаём таблицы после запуска PostgreSQL
-if ! "$VENV_PYTHON" utils/db_connect.py; then
+if ! "$VENV_PYTHON" -m utils.storage.db_connect; then
     echo "Не удалось подключиться к PostgreSQL. Проверьте сервис и порт в config.yaml."
     exit 1
 fi

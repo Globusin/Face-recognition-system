@@ -6,11 +6,11 @@ from dataclasses import dataclass
 from typing import Optional
 from uuid import uuid4
 
-from utils.camera_manager import CameraUnavailableError
-from utils.face_detection_preview import face_detection_preview
-from utils.frame_pairing import CameraFrame, FramePair
-from utils.video_capture import detect_faces
-from utils.camera_manager import CameraManager
+from utils.capture.camera_manager import CameraUnavailableError
+from utils.capture.face_detection_preview import face_detection_preview
+from utils.capture.frame_pairing import CameraFrame, FramePair
+from utils.capture.video_capture import detect_faces
+from utils.capture.camera_manager import CameraManager
 
 
 CAPTURE_POLL_SECONDS = 0.1

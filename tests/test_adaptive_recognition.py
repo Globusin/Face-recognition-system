@@ -4,9 +4,9 @@ import unittest
 from types import SimpleNamespace
 from unittest.mock import Mock, patch
 
-from utils.evidence import FAIL, INDETERMINATE, PASS, IdentityEvidence
-from utils.face_observations import ObservationRejected
-from utils.recognition import (
+from utils.face.evidence import FAIL, INDETERMINATE, PASS, IdentityEvidence
+from utils.face.face_observations import ObservationRejected
+from utils.face.recognition import (
     get_adaptive_recognition_config,
     get_recognition_mode,
     match_embedding,
@@ -217,25 +217,25 @@ ADAPTIVE_SETTINGS = {
 
 class RecognitionModeTests(unittest.TestCase):
     def test_recognition_mode_comes_from_config(self):
-        with patch.dict('utils.recognition.config',
+        with patch.dict('utils.face.recognition.config',
                         {'multi_frame_recognition': {'mode': 'adaptive'}}):
             self.assertEqual(get_recognition_mode(), 'adaptive')
-        with patch.dict('utils.recognition.config',
+        with patch.dict('utils.face.recognition.config',
                         {'multi_frame_recognition': {}}):
             self.assertEqual(get_recognition_mode(), 'fixed')
-        with patch.dict('utils.recognition.config',
+        with patch.dict('utils.face.recognition.config',
                         {'multi_frame_recognition': {'mode': 'unknown'}}):
             with self.assertRaises(ValueError):
                 get_recognition_mode()
 
     def test_adaptive_settings_convert_interval_and_validate(self):
         section = {'frame_interval_ms': 250.0, 'max_frames': 3, 'min_frames': 2}
-        with patch.dict('utils.recognition.config', {'adaptive_recognition': section}):
+        with patch.dict('utils.face.recognition.config', {'adaptive_recognition': section}):
             settings = get_adaptive_recognition_config()
         self.assertAlmostEqual(settings['frame_interval'], 0.25)
         self.assertEqual(settings['max_frames'], 3)
 
-        with patch.dict('utils.recognition.config',
+        with patch.dict('utils.face.recognition.config',
                         {'adaptive_recognition': {'min_frames': 5, 'max_frames': 3}}):
             with self.assertRaises(ValueError):
                 get_adaptive_recognition_config()
@@ -250,17 +250,17 @@ class RecognitionModeTests(unittest.TestCase):
         )
         for nearest, expected in cases:
             with self.subTest(nearest=nearest):
-                with patch('utils.recognition.find_nearest_user', return_value=nearest):
+                with patch('utils.face.recognition.find_nearest_user', return_value=nearest):
                     self.assertEqual(match_embedding([0.0]), expected)
 
     def test_adaptive_mode_stops_after_enough_frames(self):
         source = FakeObservationSource(available=7)
-        with patch('utils.recognition.get_recognition_mode', return_value='adaptive'), \
-                patch('utils.recognition.get_adaptive_recognition_config',
+        with patch('utils.face.recognition.get_recognition_mode', return_value='adaptive'), \
+                patch('utils.face.recognition.get_adaptive_recognition_config',
                       return_value=ADAPTIVE_SETTINGS), \
-                patch('utils.recognition.get_embeddings_from_frame',
+                patch('utils.face.recognition.get_embeddings_from_frame',
                       return_value=[[1.0]]) as embed, \
-                patch('utils.recognition.match_embedding', return_value=(1, 0.10)):
+                patch('utils.face.recognition.match_embedding', return_value=(1, 0.10)):
             result = recognize_face_from_camera(source, deadline=100.0)
 
         self.assertTrue(result[0])
@@ -270,12 +270,12 @@ class RecognitionModeTests(unittest.TestCase):
 
     def test_adaptive_mode_limits_attempt_duration(self):
         source = FakeObservationSource(available=7, step=1.0)
-        with patch('utils.recognition.get_recognition_mode', return_value='adaptive'), \
-                patch('utils.recognition.get_adaptive_recognition_config',
+        with patch('utils.face.recognition.get_recognition_mode', return_value='adaptive'), \
+                patch('utils.face.recognition.get_adaptive_recognition_config',
                       return_value=ADAPTIVE_SETTINGS), \
-                patch('utils.recognition.get_embeddings_from_frame',
+                patch('utils.face.recognition.get_embeddings_from_frame',
                       return_value=[[1.0]]) as embed, \
-                patch('utils.recognition.match_embedding', return_value=(None, None)):
+                patch('utils.face.recognition.match_embedding', return_value=(None, None)):
             result = recognize_face_from_camera(source, deadline=100.0)
 
         self.assertFalse(result[0])
@@ -284,10 +284,10 @@ class RecognitionModeTests(unittest.TestCase):
 
     def test_fixed_mode_consumes_configured_frames(self):
         source = FakeObservationSource(available=7)
-        with patch('utils.recognition.get_recognition_mode', return_value='fixed'), \
-                patch('utils.recognition.get_embeddings_from_frame',
+        with patch('utils.face.recognition.get_recognition_mode', return_value='fixed'), \
+                patch('utils.face.recognition.get_embeddings_from_frame',
                       return_value=[[1.0]]) as embed, \
-                patch('utils.recognition.recognize_face_from_embeddings_series',
+                patch('utils.face.recognition.recognize_face_from_embeddings_series',
                       return_value=(True, 1, 0.1)) as score:
             result = recognize_face_from_camera(source, deadline=100.0)
 
@@ -299,12 +299,12 @@ class RecognitionModeTests(unittest.TestCase):
     def test_adaptive_mode_rejects_track_after_database(self):
         source = FakeObservationSource(available=7)
         source.next = Mock(side_effect=ObservationRejected('face_lost'))
-        with patch('utils.recognition.get_recognition_mode', return_value='adaptive'), \
-                patch('utils.recognition.get_adaptive_recognition_config',
+        with patch('utils.face.recognition.get_recognition_mode', return_value='adaptive'), \
+                patch('utils.face.recognition.get_adaptive_recognition_config',
                       return_value=ADAPTIVE_SETTINGS), \
-                patch('utils.recognition.get_embeddings_from_frame',
+                patch('utils.face.recognition.get_embeddings_from_frame',
                       return_value=[[1.0]]), \
-                patch('utils.recognition.match_embedding', return_value=(1, 0.10)):
+                patch('utils.face.recognition.match_embedding', return_value=(1, 0.10)):
             with self.assertRaisesRegex(ObservationRejected, 'face_lost'):
                 recognize_face_from_camera(source, deadline=100.0)
 

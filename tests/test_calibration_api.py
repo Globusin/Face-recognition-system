@@ -10,9 +10,9 @@ import numpy as np
 from unittest.mock import patch
 
 from src.app import app
-from utils.maintenance import MaintenanceMode
+from utils.common.maintenance import MaintenanceMode
 from src.monitor import run_monitoring
-from utils.stereo_calibration import CalibrationSession
+from utils.stereo.stereo_calibration import CalibrationSession
 
 
 class CalibrationApiTests(unittest.TestCase):
@@ -22,7 +22,7 @@ class CalibrationApiTests(unittest.TestCase):
 
     def test_disabled_without_configured_secret(self):
         with patch.dict('os.environ', {'CALIBRATION_ADMIN_TOKEN': ''}), \
-                patch('utils.api_security.admin_token', return_value=''):
+                patch('utils.access.api_security.admin_token', return_value=''):
             self.assertEqual(self.client.get('/api/calibration/status').status_code, 503)
 
     def test_quality_requires_token_and_stationary_confirmation(self):
@@ -64,7 +64,7 @@ class CalibrationApiTests(unittest.TestCase):
                 self.assertEqual(measure.call_args.args[9:], (True, True, 'b' * 32))
 
     def test_stereo_measurement_has_its_own_tft_state(self):
-        from utils.display import DisplayState
+        from utils.device.display import DisplayState
         gate = MaintenanceMode()
         gate.requested.set()
         gate.stereo_measuring.set()
@@ -84,7 +84,7 @@ class CalibrationApiTests(unittest.TestCase):
         session_id = 'a' * 32
         with tempfile.TemporaryDirectory() as root, patch.object(session, '_root', return_value=Path(root)), \
                 patch.dict('os.environ', {'CALIBRATION_ADMIN_TOKEN': 'local-test-secret'}), \
-                patch('utils.stereo_calibration.measure_board_geometry', return_value={'mean_error_mm': 0}), \
+                patch('utils.stereo.stereo_calibration.measure_board_geometry', return_value={'mean_error_mm': 0}), \
                 patch('src.app.calibration_session', session):
             folder = Path(root) / session_id
             folder.mkdir()
@@ -152,7 +152,7 @@ class CalibrationApiTests(unittest.TestCase):
         gate.requested.set()
         with patch('src.app.maintenance', gate), \
                 patch('src.app.authorize_admin', return_value=None), \
-                patch('utils.recognition.recognize_face_from_camera') as recognize, \
+                patch('utils.face.recognition.recognize_face_from_camera') as recognize, \
                 patch('src.app.create_embeddings_from_camera') as enroll:
             self.assertEqual(self.client.post('/api/authenticate').status_code, 409)
             self.assertEqual(self.client.post('/api/add_user?name=test').status_code, 409)

@@ -13,12 +13,13 @@ from pathlib import Path
 import cv2
 import numpy as np
 
-from utils.camera_manager import get_camera_manager
-from utils.config_loader import load_config
-from utils.maintenance import maintenance
-from utils.logger import log_info
-from utils.calibration_quality import measure_planarity, measure_depth_stability
-from utils.stereo_timing import record_duration, summarize_durations
+from utils.capture.camera_manager import get_camera_manager
+from utils.common.config_loader import load_config
+from utils.common.maintenance import maintenance
+from utils.common.logger import log_info
+from utils.paths import PROJECT_ROOT
+from utils.stereo.calibration_quality import measure_planarity, measure_depth_stability
+from utils.common.timing import record_duration, summarize_durations
 
 
 BOARD = (7, 7)
@@ -511,7 +512,7 @@ class CalibrationSession:
 
     def _root(self):
         settings = load_config().get('stereo_calibration', {})
-        return Path(__file__).resolve().parent.parent / settings.get('output_dir', 'data/calibration')
+        return PROJECT_ROOT / settings.get('output_dir', 'data/calibration')
 
     def _session_folder(self):
         return self._root() / self.session_id
@@ -798,7 +799,7 @@ class CalibrationSession:
             return dict(quality=quality, report_id=report_id, status='measured')
 
     def measure_timing(self, session_id, calibration_id, mounting_confirmed, motion_confirmed, rotation):
-        from utils.stereo_timing import estimate_timing, rectified_points, exposure_settings
+        from utils.stereo.stereo_timing import estimate_timing, rectified_points, exposure_settings
 
         with self.lock:
             self.require_session(session_id)
@@ -896,8 +897,8 @@ class CalibrationSession:
             return report
 
     def _timing_context(self, manager, calibration_id, metadata, arrays, limits, confirmed):
-        from utils.stereo_timing import check_timing_profile, exposure_settings
-        from utils.two_view_pad import wait_for_measurement_pair, extract_face_points
+        from utils.stereo.stereo_timing import check_timing_profile, exposure_settings
+        from utils.stereo.two_view_pad import wait_for_measurement_pair, extract_face_points
 
         check_timing_profile(self.timing_result, calibration_id, metadata['validation']['fingerprint'],
                              manager.get_status(), time.monotonic(), confirmed)
@@ -916,7 +917,7 @@ class CalibrationSession:
     def measure_face(self, session_id, calibration_id, mounting_confirmed, consent_confirmed,
                      sample_type, lighting, distance_cm, timing_confirmed=False, check_timing=False,
                      dense_depth=False, stationary_confirmed=False, series_id=None):
-        from utils.two_view_pad import inspect_pair, measurement_limits, wait_for_measurement_pair
+        from utils.stereo.two_view_pad import inspect_pair, measurement_limits, wait_for_measurement_pair
 
         with self.lock:
             self.require_session(session_id)
@@ -988,7 +989,7 @@ class CalibrationSession:
                 pair = wait_for_measurement_pair(manager, limits, report['pair_selection'])
                 retry_pair = False
                 if check_timing:
-                    from utils.stereo_timing import check_timing_profile
+                    from utils.stereo.stereo_timing import check_timing_profile
                     check_timing_profile(temporal['profile'], calibration_id, metadata['validation']['fingerprint'],
                                          manager.get_status(), time.monotonic(), timing_confirmed)
                 if self._camera_signature(manager) != signature:
@@ -1003,7 +1004,7 @@ class CalibrationSession:
                                       dense_depth=dense_depth)
                 if temporal is not None:
                     report['timing_report_id'] = temporal['profile']['report_id']
-                    from utils.stereo_timing import exposure_settings
+                    from utils.stereo.stereo_timing import exposure_settings
                     if exposure_settings(manager) != temporal['profile'].get('exposure_controls'):
                         result.pop('metrics', None)
                         result.update(status='not_measurable', timing_verified=False, retryable=False,
@@ -1030,7 +1031,7 @@ class CalibrationSession:
             report['elapsed_seconds'] = time.perf_counter() - started
             # Читаем после обработки, чтобы не задерживать выбранную пару кадров
             # Это состояние драйвера, не подтверждённая выдержка конкретного кадра
-            from utils.stereo_timing import exposure_snapshot
+            from utils.stereo.stereo_timing import exposure_snapshot
             report['exposure_snapshot'] = exposure_snapshot(manager)
             folder = self._session_folder() / 'stereo_pad_checks'
             folder.mkdir(parents=True, exist_ok=True)

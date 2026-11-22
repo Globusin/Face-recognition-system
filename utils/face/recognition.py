@@ -1,18 +1,14 @@
 import face_recognition
 import math
 import cv2
-import sys
 import time
-from pathlib import Path
 
-sys.path.append(str(Path(__file__).parent.parent))
-
-from utils.video_capture import capture_face_frames, detect_faces
-from utils.db_connect import *
-from utils.config_loader import load_config
-from utils.evidence import PASS, IdentityEvidence
-from utils.logger import log_debug, log_error, log_info, log_warning
-from utils.timing import measure_time
+from utils.capture.video_capture import capture_face_frames, detect_faces
+from utils.storage.db_connect import *
+from utils.common.config_loader import load_config
+from utils.face.evidence import PASS, IdentityEvidence
+from utils.common.logger import log_debug, log_error, log_info, log_warning
+from utils.common.timing import measure_time
 
 config = load_config()
 

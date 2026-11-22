@@ -8,10 +8,10 @@ from unittest.mock import Mock, patch
 
 import numpy as np
 
-from utils.camera_manager import CameraManager, CameraReader, CameraUnavailableError
-from utils.face_observations import FaceObservationSource, ObservationRejected
-from utils.frame_pairing import CameraFrame, FramePair, FramePairer
-from utils.recognition import recognize_face_from_camera
+from utils.capture.camera_manager import CameraManager, CameraReader, CameraUnavailableError
+from utils.face.face_observations import FaceObservationSource, ObservationRejected
+from utils.capture.frame_pairing import CameraFrame, FramePair, FramePairer
+from utils.face.recognition import recognize_face_from_camera
 
 
 class FaceObservationTests(unittest.TestCase):
@@ -123,8 +123,8 @@ class FaceObservationTests(unittest.TestCase):
         source = Mock()
         source.observations.return_value = iter([])
         source.next.side_effect = ObservationRejected('face_lost')
-        with patch('utils.recognition.get_recognition_mode', return_value='fixed'), \
-                patch('utils.recognition.recognize_face_from_embeddings_series',
+        with patch('utils.face.recognition.get_recognition_mode', return_value='fixed'), \
+                patch('utils.face.recognition.recognize_face_from_embeddings_series',
                       return_value=(True, 7, 0.1)):
             with self.assertRaisesRegex(ObservationRejected, 'face_lost'):
                 recognize_face_from_camera(source, 110)
@@ -156,9 +156,9 @@ class FaceObservationTests(unittest.TestCase):
         observation = SimpleNamespace(primary=self.frame(1), face_box=(10, 10, 40, 40))
         source = Mock()
         source.observations.return_value = iter([observation])
-        with patch('utils.recognition.get_recognition_mode', return_value='fixed'), \
-                patch('utils.recognition.get_embeddings_from_frame', return_value=[[1]]) as embed, \
-                patch('utils.recognition.recognize_face_from_embeddings_series',
+        with patch('utils.face.recognition.get_recognition_mode', return_value='fixed'), \
+                patch('utils.face.recognition.get_embeddings_from_frame', return_value=[[1]]) as embed, \
+                patch('utils.face.recognition.recognize_face_from_embeddings_series',
                       return_value=(True, 7, 0.1)) as score:
             result = recognize_face_from_camera(source, 110)
         embed.assert_called_once_with(observation.primary.image, observation.face_box)

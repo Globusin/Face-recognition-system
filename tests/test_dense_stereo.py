@@ -6,9 +6,9 @@ import unittest
 import cv2
 import numpy as np
 
-from utils.dense_stereo import disparity_consistency, measure_dense_depth, plane_statistics
-from utils.frame_pairing import CameraFrame, FramePair
-from utils.two_view_pad import DEFAULT_LIMITS
+from utils.stereo.dense_stereo import disparity_consistency, measure_dense_depth, plane_statistics
+from utils.capture.frame_pairing import CameraFrame, FramePair
+from utils.stereo.two_view_pad import DEFAULT_LIMITS
 
 
 class DenseStereoTests(unittest.TestCase):

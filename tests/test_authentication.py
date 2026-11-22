@@ -4,10 +4,10 @@ import threading
 import unittest
 from unittest.mock import Mock
 
-from utils.authentication import (
+from utils.access.authentication import (
     AuthenticationEngine, AuthenticationState as State, CheckResult, CheckStatus,
 )
-from utils.maintenance import MaintenanceMode
+from utils.common.maintenance import MaintenanceMode
 
 
 class AuthenticationEngineTests(unittest.TestCase):

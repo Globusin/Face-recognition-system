@@ -5,7 +5,7 @@ import unittest
 import cv2
 import numpy as np
 
-from utils.head_pose import FACE_MODEL, estimate_head_pose
+from utils.face.head_pose import FACE_MODEL, estimate_head_pose
 
 
 class HeadPoseTests(unittest.TestCase):

@@ -9,9 +9,9 @@ import threading
 import time
 from pathlib import Path
 
-from utils.logger import log_error, log_info
-from utils.stereo_calibration import camera_signature, load_calibration
-from utils.two_view_pad import inspect_pair
+from utils.common.logger import log_error, log_info
+from utils.stereo.stereo_calibration import camera_signature, load_calibration
+from utils.stereo.two_view_pad import inspect_pair
 
 LIVE = 'LIVE'
 SPOOF = 'SPOOF'

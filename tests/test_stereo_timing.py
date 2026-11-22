@@ -10,12 +10,13 @@ from unittest.mock import patch
 
 import numpy as np
 
-from utils.frame_pairing import CameraFrame, FramePair
-from utils.stereo_timing import estimate_timing, timing_depth_uncertainty, check_timing_profile, exposure_settings
-from utils.two_view_pad import DEFAULT_LIMITS, inspect_pair
-from utils.stereo_calibration import CalibrationSession
-from utils.maintenance import maintenance
-from utils.stereo_timing import record_duration, summarize_durations, exposure_snapshot
+from utils.capture.frame_pairing import CameraFrame, FramePair
+from utils.stereo.stereo_timing import estimate_timing, timing_depth_uncertainty, check_timing_profile, exposure_settings
+from utils.stereo.two_view_pad import DEFAULT_LIMITS, inspect_pair
+from utils.stereo.stereo_calibration import CalibrationSession
+from utils.common.maintenance import maintenance
+from utils.common.timing import record_duration, summarize_durations
+from utils.stereo.stereo_timing import exposure_snapshot
 
 
 class StereoTimingTests(unittest.TestCase):
@@ -23,7 +24,7 @@ class StereoTimingTests(unittest.TestCase):
         manager = SimpleNamespace(sources={'primary': 0, 'secondary': '/dev/video2'})
         output = ('auto_exposure: 3 (Aperture Priority Mode)\n'
                   'exposure_time_absolute: 300\nexposure_dynamic_framerate: 1\n')
-        with patch('utils.stereo_timing.subprocess.run', side_effect=[
+        with patch('utils.stereo.stereo_timing.subprocess.run', side_effect=[
                 SimpleNamespace(stdout=output), subprocess.TimeoutExpired('v4l2-ctl', 2)]) as run:
             result = exposure_snapshot(manager)
         self.assertEqual(result['cameras']['primary']['controls']['auto_exposure'], 3)
@@ -36,13 +37,13 @@ class StereoTimingTests(unittest.TestCase):
 
     def test_snapshot_missing_v4l2_does_not_raise(self):
         manager = SimpleNamespace(sources={'primary': 0, 'secondary': 2})
-        with patch('utils.stereo_timing.subprocess.run', side_effect=FileNotFoundError('v4l2-ctl')):
+        with patch('utils.stereo.stereo_timing.subprocess.run', side_effect=FileNotFoundError('v4l2-ctl')):
             result = exposure_snapshot(manager)
         self.assertTrue(all(camera['status'] == 'unavailable' for camera in result['cameras'].values()))
 
     def test_performance_summary_and_failed_stage(self):
         durations = {}
-        with patch('utils.stereo_timing.time.perf_counter', side_effect=[10.0, 10.01]):
+        with patch('utils.stereo.stereo_timing.time.perf_counter', side_effect=[10.0, 10.01]):
             with self.assertRaises(ValueError):
                 with record_duration(durations, 'pair_wait'):
                     raise ValueError('Нет пары')
@@ -67,9 +68,9 @@ class StereoTimingTests(unittest.TestCase):
         manager.get_status.return_value = {'pairing': {'paired_frames': 0}}
         manager.get_pair.return_value = pair
         durations = {}
-        with patch('utils.stereo_calibration.get_camera_manager', return_value=manager), \
+        with patch('utils.stereo.stereo_calibration.get_camera_manager', return_value=manager), \
                 patch.object(session, '_camera_signature', return_value={}), \
-                patch('utils.stereo_calibration.find_board', side_effect=[np.zeros((49, 1, 2)), None]):
+                patch('utils.stereo.stereo_calibration.find_board', side_effect=[np.zeros((49, 1, 2)), None]):
             result = session.observe('test', 0, prepare_preview=False, durations=durations)
         self.assertEqual(result['found'], {'primary': True, 'secondary': False})
         self.assertEqual(set(durations), {'pair_wait', 'board_detection_primary', 'board_detection_secondary'})
@@ -166,8 +167,8 @@ class StereoTimingTests(unittest.TestCase):
     def test_good_geometry_but_bad_time_does_not_produce_measurement(self):
         points, pair, previous, profile, arrays = self.geometry()
         profile['estimate']['uncertainty_ms'] = 60
-        with patch('utils.two_view_pad.time.monotonic_ns', return_value=1_100_000_000), \
-                patch('utils.two_view_pad.extract_face_points', side_effect=[points['primary'], points['secondary']]):
+        with patch('utils.stereo.two_view_pad.time.monotonic_ns', return_value=1_100_000_000), \
+                patch('utils.stereo.two_view_pad.extract_face_points', side_effect=[points['primary'], points['secondary']]):
             result = inspect_pair(pair, arrays, [1280, 720], DEFAULT_LIMITS,
                                   temporal_context=dict(previous=previous, profile=profile))
         self.assertEqual(result['status'], 'not_measurable')
@@ -176,8 +177,8 @@ class StereoTimingTests(unittest.TestCase):
 
     def test_geometry_without_time_context_is_not_a_measurement(self):
         points, pair, _, _, arrays = self.geometry()
-        with patch('utils.two_view_pad.time.monotonic_ns', return_value=1_100_000_000), \
-                patch('utils.two_view_pad.extract_face_points', side_effect=[points['primary'], points['secondary']]):
+        with patch('utils.stereo.two_view_pad.time.monotonic_ns', return_value=1_100_000_000), \
+                patch('utils.stereo.two_view_pad.extract_face_points', side_effect=[points['primary'], points['secondary']]):
             result = inspect_pair(pair, arrays, [1280, 720], DEFAULT_LIMITS)
         self.assertEqual(result['status'], 'not_measurable')
         self.assertIn('временная точность', result['reason'])
@@ -185,24 +186,24 @@ class StereoTimingTests(unittest.TestCase):
     def test_exposure_is_read_only_and_auto_exposure_is_rejected(self):
         manager = SimpleNamespace(sources={'primary': '/dev/test-primary', 'secondary': '/dev/test-secondary'})
         manual = 'auto_exposure: 1\nexposure_time_absolute: 166\nexposure_dynamic_framerate: 0\n'
-        with patch('utils.stereo_timing.subprocess.run', return_value=SimpleNamespace(stdout=manual)) as run:
+        with patch('utils.stereo.stereo_timing.subprocess.run', return_value=SimpleNamespace(stdout=manual)) as run:
             result = exposure_settings(manager)
             self.assertEqual(result['secondary']['exposure_time_absolute'], 166)
             self.assertNotIn('--set-ctrl', str(run.call_args_list))
-        with patch('utils.stereo_timing.subprocess.run', return_value=SimpleNamespace(stdout=manual.replace('exposure: 1', 'exposure: 3'))):
+        with patch('utils.stereo.stereo_timing.subprocess.run', return_value=SimpleNamespace(stdout=manual.replace('exposure: 1', 'exposure: 3'))):
             with self.assertRaisesRegex(ValueError, 'ручная выдержка'):
                 exposure_settings(manager)
-        with patch('utils.stereo_timing.subprocess.run', side_effect=subprocess.TimeoutExpired('v4l2-ctl', 2)):
+        with patch('utils.stereo.stereo_timing.subprocess.run', side_effect=subprocess.TimeoutExpired('v4l2-ctl', 2)):
             with self.assertRaises(ValueError):
                 exposure_settings(manager)
 
     def test_exposure_menu_descriptions_are_parsed(self):
         manager = SimpleNamespace(sources={'primary': '/dev/test-primary', 'secondary': '/dev/test-secondary'})
         controls = 'auto_exposure: 1 (Manual Mode)\nexposure_time_absolute: 166\nexposure_dynamic_framerate: 0\n'
-        with patch('utils.stereo_timing.subprocess.run', return_value=SimpleNamespace(stdout=controls)):
+        with patch('utils.stereo.stereo_timing.subprocess.run', return_value=SimpleNamespace(stdout=controls)):
             self.assertEqual(exposure_settings(manager)['primary']['auto_exposure'], 1)
         auto = controls.replace('1 (Manual Mode)', '3 (Aperture Priority Mode)')
-        with patch('utils.stereo_timing.subprocess.run', return_value=SimpleNamespace(stdout=auto)):
+        with patch('utils.stereo.stereo_timing.subprocess.run', return_value=SimpleNamespace(stdout=auto)):
             with self.assertRaisesRegex(ValueError, 'ручная выдержка'):
                 exposure_settings(manager)
 
@@ -234,13 +235,13 @@ class StereoTimingTests(unittest.TestCase):
                     patch.object(session, '_root', return_value=Path(root)), \
                     patch.object(session, '_camera_signature', return_value={'test': 'camera'}), \
                     patch.object(session, 'observe', side_effect=observe), \
-                    patch('utils.stereo_calibration.get_camera_manager', return_value=manager), \
-                    patch('utils.stereo_calibration.load_config', return_value={
+                    patch('utils.stereo.stereo_calibration.get_camera_manager', return_value=manager), \
+                    patch('utils.stereo.stereo_calibration.load_config', return_value={
                         'stereo_calibration': {'timing_fast_board': fast_board, 'timing_detection_width': 640}}), \
-                    patch('utils.stereo_calibration.load_calibration', return_value=({'validation': {'fingerprint': 'hash'}}, arrays)), \
-                    patch('utils.stereo_calibration.time.monotonic', side_effect=lambda: clock[0]), \
-                    patch('utils.stereo_timing.rectified_points', side_effect=lambda points, *args: points[:, 0]), \
-                    patch('utils.stereo_timing.exposure_settings', return_value={},
+                    patch('utils.stereo.stereo_calibration.load_calibration', return_value=({'validation': {'fingerprint': 'hash'}}, arrays)), \
+                    patch('utils.stereo.stereo_calibration.time.monotonic', side_effect=lambda: clock[0]), \
+                    patch('utils.stereo.stereo_timing.rectified_points', side_effect=lambda points, *args: points[:, 0]), \
+                    patch('utils.stereo.stereo_timing.exposure_settings', return_value={},
                           side_effect=ValueError('Нужна ручная выдержка') if fail_exposure else None):
                 result = session.measure_timing('test-session', 'a' * 32, True, True, 0)
                 self.assertEqual(result['status'], 'not_measurable' if fail_exposure else 'measured')
@@ -267,7 +268,7 @@ class StereoTimingTests(unittest.TestCase):
     def test_probe_without_confirmations_does_not_read_cameras(self):
         session = CalibrationSession()
         session.active, session.session_id = True, 'test'
-        with patch('utils.stereo_calibration.get_camera_manager') as manager:
+        with patch('utils.stereo.stereo_calibration.get_camera_manager') as manager:
             with self.assertRaises(ValueError):
                 session.measure_timing('test', 'a' * 32, True, False, 0)
             manager.assert_not_called()

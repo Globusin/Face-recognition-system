@@ -11,7 +11,7 @@ import digitalio
 from PIL import Image, ImageDraw, ImageFont, ImageOps
 from adafruit_rgb_display.st7735 import ST7735R
 
-from utils.config_loader import load_config
+from utils.common.config_loader import load_config
 
 
 # ============================================================

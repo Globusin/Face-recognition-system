@@ -6,20 +6,20 @@ from pathlib import Path
 
 sys.path.append(str(Path(__file__).parent.parent))
 
-from utils.authentication import AuthenticationEngine, AuthenticationState
-from utils.recognition import recognize_face_from_camera
-from utils.camera_manager import get_camera_manager, stop_camera_manager
-from utils.challenge_check import build_challenge_check
-from utils.face_observations import FaceObservationSource, ObservationRejected
-from utils.lock_controller import initialize_lock_controller
-from utils.display import initialize_display, DisplayState
-from utils.config_loader import load_config
-from utils.logger import log_info, log_error, log_warning
-from utils.maintenance import maintenance
-from utils.stereo_liveness import (
+from utils.access.authentication import AuthenticationEngine, AuthenticationState
+from utils.face.recognition import recognize_face_from_camera
+from utils.capture.camera_manager import get_camera_manager, stop_camera_manager
+from utils.challenge.challenge_check import build_challenge_check
+from utils.face.face_observations import FaceObservationSource, ObservationRejected
+from utils.access.lock_controller import initialize_lock_controller
+from utils.device.display import initialize_display, DisplayState
+from utils.common.config_loader import load_config
+from utils.common.logger import log_info, log_error, log_warning
+from utils.common.maintenance import maintenance
+from utils.stereo.stereo_liveness import (
     StereoDiagnosticsCollector, StereoLivenessDiagnostics, liveness_settings,
 )
-from utils.two_view_pad import measurement_limits
+from utils.stereo.two_view_pad import measurement_limits
 
 
 def safe_display_state(display, state: DisplayState, detail: str = None) -> None:

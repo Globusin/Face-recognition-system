@@ -1,17 +1,17 @@
 import os
 import time
 import threading
-from pathlib import Path
 
 import cv2
 
-from utils.camera_manager import (
+from utils.capture.camera_manager import (
     CameraError,
     get_camera_manager,
 )
-from utils.logger import log_error, log_info
-from utils.timing import measure_time
-from utils.face_detection_preview import face_detection_preview
+from utils.common.logger import log_error, log_info
+from utils.paths import PROJECT_ROOT
+from utils.common.timing import measure_time
+from utils.capture.face_detection_preview import face_detection_preview
 
 _face_cascade = None
 _cascade_lock = threading.Lock()
@@ -157,7 +157,7 @@ def capture_frames(frames_count, timeout=10, frame_delay=0.15):
 def capture_image(output_path=None, timeout=10):
     """Сохраняет свежий кадр с лицом от основной камеры"""
     if output_path is None:
-        data_dir = Path(__file__).parent.parent / 'data'
+        data_dir = PROJECT_ROOT / 'data'
         data_dir.mkdir(exist_ok=True)
         output_path = str(data_dir / 'current_image.jpg')
 

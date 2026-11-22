@@ -3,7 +3,7 @@ import sys
 from pathlib import Path
 
 # Импортируем загрузчик конфигурации
-from utils.config_loader import load_config
+from utils.common.config_loader import load_config
 
 # Загружаем конфигурацию при импорте модуля
 _config = None

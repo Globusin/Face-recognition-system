@@ -203,7 +203,7 @@ def inspect_pair(pair, arrays, image_size, limits, temporal_context=None, *, sta
         if temporal_context is None and not static_diagnostic:
             raise ValueError('Не оценена временная точность камер')
         if not static_diagnostic:
-            from utils.stereo_timing import timing_depth_uncertainty
+            from utils.stereo.stereo_timing import timing_depth_uncertainty
             uncertainty = timing_depth_uncertainty(points, pair, temporal_context['previous'],
                                                   temporal_context['profile'], arrays, limits)
             metrics.update(uncertainty)
@@ -212,7 +212,7 @@ def inspect_pair(pair, arrays, image_size, limits, temporal_context=None, *, sta
         if dense_depth:
             if not static_diagnostic:
                 raise ValueError('StereoSGBM доступен только в статическом эксперименте')
-            from utils.dense_stereo import measure_dense_depth
+            from utils.stereo.dense_stereo import measure_dense_depth
             # Отказ плотной карты не отменяет проверенную разреженную геометрию
             try:
                 dense, dense_previews = measure_dense_depth(pair, arrays, points, limits)
@@ -245,7 +245,7 @@ def inspect_pair(pair, arrays, image_size, limits, temporal_context=None, *, sta
 
 def face_point_previews(images, points, diagnostics):
     """Размечает исходные кадры даже при отказе геометрии, не сохраняя лица"""
-    from utils.stereo_calibration import annotated_preview
+    from utils.stereo.stereo_calibration import annotated_preview
 
     previews = {}
     for role, image in images.items():

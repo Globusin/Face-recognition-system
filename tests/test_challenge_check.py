@@ -6,15 +6,15 @@ from unittest.mock import Mock, patch
 
 import numpy as np
 
-from utils.authentication import AuthenticationSession, CheckResult, CheckStatus
-from utils.challenge_check import (
+from utils.access.authentication import AuthenticationSession, CheckResult, CheckStatus
+from utils.challenge.challenge_check import (
     ChallengeCheck, build_challenge_check, challenge_policy_settings,
 )
-from utils.challenge_response import (
+from utils.challenge.challenge_response import (
     COMMANDS, FaceObservation, challenge_settings, observe_face,
 )
-from utils.display import NullDisplay
-from utils.face_observations import ObservationRejected
+from utils.device.display import NullDisplay
+from utils.face.face_observations import ObservationRejected
 
 
 class FakeClock:
@@ -85,7 +85,7 @@ def make_check(policy='always', display=None, clock=None, adaptive_distance=0.12
 class ChallengeExecutionTests(unittest.TestCase):
     def setUp(self):
         # Реальные кадры и dlib в этих проверках не нужны
-        patcher = patch('utils.challenge_check.observe_face', side_effect=fake_observe)
+        patcher = patch('utils.challenge.challenge_check.observe_face', side_effect=fake_observe)
         patcher.start()
         self.addCleanup(patcher.stop)
 
@@ -95,7 +95,7 @@ class ChallengeExecutionTests(unittest.TestCase):
         display = Mock()
         check = make_check(clock=clock, display=display)
         check.bind(source)
-        with patch('utils.challenge_response.secrets.choice', return_value=command):
+        with patch('utils.challenge.challenge_response.secrets.choice', return_value=command):
             result = check(make_session())
         return result, display
 
@@ -153,7 +153,7 @@ class ChallengeExecutionTests(unittest.TestCase):
         check = make_check(clock=clock)
         check.bind(source)
         session = make_session()
-        with patch('utils.challenge_response.secrets.choice', return_value='TURN_LEFT'):
+        with patch('utils.challenge.challenge_response.secrets.choice', return_value='TURN_LEFT'):
             self.assertEqual(check(session).status, CheckStatus.PASS)
             second = check(session)
         self.assertEqual(second.status, CheckStatus.FAIL)
@@ -250,7 +250,7 @@ class KnownFaceBoxTests(unittest.TestCase):
                       return_value=[self.face()]) as landmarks, \
                 patch('face_recognition.face_encodings',
                       return_value=[np.zeros(128)]), \
-                patch('utils.challenge_response.estimate_head_pose',
+                patch('utils.challenge.challenge_response.estimate_head_pose',
                       return_value={'status': 'failed'}):
             result = observe_face(image, 1.0, face_box=(10, 20, 40, 50))
 

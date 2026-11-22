@@ -10,7 +10,8 @@ from typing import Any, Dict, Optional, Tuple
 
 from PIL import Image, ImageDraw, ImageFont, ImageOps
 
-from utils.logger import log_error, log_info, log_warning
+from utils.common.logger import log_error, log_info, log_warning
+from utils.paths import PROJECT_ROOT
 
 
 class DisplayState(Enum):
@@ -27,8 +28,7 @@ class DisplayState(Enum):
     TIMING_TEST = "timing_test"
 
 
-PROJECT_DIR = Path(__file__).resolve().parent.parent
-DISPLAY_IMAGE_DIR = PROJECT_DIR / "resources" / "display-images"
+DISPLAY_IMAGE_DIR = PROJECT_ROOT / "resources" / "display-images"
 
 STATE_IMAGES = {
     DisplayState.CHECKING: (

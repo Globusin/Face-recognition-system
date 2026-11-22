@@ -8,7 +8,7 @@ from pathlib import Path
 
 sys.path.append(str(Path(__file__).parent))
 
-from utils.recognition import create_embeddings_from_camera, save_embedding
+from utils.face.recognition import create_embeddings_from_camera, save_embedding
 
 
 def main():

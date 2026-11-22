@@ -8,11 +8,11 @@ from unittest.mock import Mock, patch
 
 import numpy as np
 
-from utils.authentication import (
+from utils.access.authentication import (
     AuthenticationSession, AuthenticationState, CheckResult, CheckStatus,
 )
-from utils.frame_pairing import CameraFrame, FramePair
-from utils.stereo_liveness import (
+from utils.capture.frame_pairing import CameraFrame, FramePair
+from utils.stereo.stereo_liveness import (
     LIVE,
     SPOOF,
     UNKNOWN,
@@ -23,7 +23,7 @@ from utils.stereo_liveness import (
     measure_pair,
     rule_based_classifier,
 )
-from utils.two_view_pad import DEFAULT_LIMITS
+from utils.stereo.two_view_pad import DEFAULT_LIMITS
 
 
 def inspection(status='measured', dense=None, reason=None, **metrics):
@@ -154,7 +154,7 @@ class MeasurementTests(unittest.TestCase):
         return projected
 
     def measure(self, points):
-        with patch('utils.two_view_pad.extract_face_points',
+        with patch('utils.stereo.two_view_pad.extract_face_points',
                    side_effect=self.project(points)):
             return measure_pair(self.pair, self.arrays, [1280, 720],
                                 DEFAULT_LIMITS, self.settings)
@@ -176,7 +176,7 @@ class MeasurementTests(unittest.TestCase):
 
     def test_custom_classifier_replaces_rules(self):
         classifier = Mock(return_value=(UNKNOWN, 'Модель не обучена', {}))
-        with patch('utils.two_view_pad.extract_face_points',
+        with patch('utils.stereo.two_view_pad.extract_face_points',
                    side_effect=self.project(self.flat)):
             result = measure_pair(self.pair, self.arrays, [1280, 720],
                                   DEFAULT_LIMITS, self.settings, classifier=classifier)
@@ -213,8 +213,8 @@ class DiagnosticsTests(unittest.TestCase):
             diagnostics.measure(self.pair)
 
     def test_calibration_failure_is_cached(self):
-        with patch('utils.stereo_liveness.camera_signature', return_value={}), \
-                patch('utils.stereo_liveness.load_calibration',
+        with patch('utils.stereo.stereo_liveness.camera_signature', return_value={}), \
+                patch('utils.stereo.stereo_liveness.load_calibration',
                       side_effect=ValueError('нет файла')) as load:
             diagnostics = StereoLivenessDiagnostics(
                 self.manager, self.settings, 'data/calibration', dict(DEFAULT_LIMITS),
@@ -225,8 +225,8 @@ class DiagnosticsTests(unittest.TestCase):
         self.assertEqual(load.call_count, 1)
 
     def test_camera_mode_mismatch_is_rejected(self):
-        with patch('utils.stereo_liveness.camera_signature', return_value={'other': 1}):
-            with patch('utils.stereo_liveness.load_calibration',
+        with patch('utils.stereo.stereo_liveness.camera_signature', return_value={'other': 1}):
+            with patch('utils.stereo.stereo_liveness.load_calibration',
                        return_value=(self.metadata, {})):
                 diagnostics = StereoLivenessDiagnostics(
                     self.manager, self.settings, 'data/calibration', dict(DEFAULT_LIMITS),

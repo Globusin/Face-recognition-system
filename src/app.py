@@ -10,14 +10,14 @@ import cv2
 
 sys.path.append(str(Path(__file__).parent.parent))
 
-from utils.recognition import create_embeddings_from_camera, save_embedding, add_new_user_with_embedding
-from utils.db_connect import get_all_users, delete_user_by_id
-from utils.camera_manager import CameraError, get_camera_manager, get_public_camera_status
-from utils.maintenance import maintenance
-from utils.stereo_calibration import calibration_session
-from utils.face_detection_preview import face_detection_preview
-from utils.challenge_session import challenge_session
-from utils.api_security import authorize_admin, login_admin, FramePreviewLimiter
+from utils.face.recognition import create_embeddings_from_camera, save_embedding, add_new_user_with_embedding
+from utils.storage.db_connect import get_all_users, delete_user_by_id
+from utils.capture.camera_manager import CameraError, get_camera_manager, get_public_camera_status
+from utils.common.maintenance import maintenance
+from utils.stereo.stereo_calibration import calibration_session
+from utils.capture.face_detection_preview import face_detection_preview
+from utils.challenge.challenge_session import challenge_session
+from utils.access.api_security import authorize_admin, login_admin, FramePreviewLimiter
 
 app = Flask(__name__)
 app.secret_key = os.urandom(24)
@@ -246,7 +246,7 @@ def camera_frame(role):
 @app.route('/api/authenticate', methods=['POST'])
 def authenticate():
     """API endpoint для аутентификации пользователя по лицу"""
-    from utils.recognition import recognize_face_from_camera
+    from utils.face.recognition import recognize_face_from_camera
     
     try:
         with maintenance.recognition():
