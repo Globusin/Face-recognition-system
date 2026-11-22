@@ -9,6 +9,7 @@ sys.path.append(str(Path(__file__).parent.parent))
 from utils.authentication import AuthenticationEngine, AuthenticationState
 from utils.recognition import recognize_face_from_camera
 from utils.camera_manager import get_camera_manager, stop_camera_manager
+from utils.challenge_check import build_challenge_check
 from utils.face_observations import FaceObservationSource, ObservationRejected
 from utils.lock_controller import initialize_lock_controller
 from utils.display import initialize_display, DisplayState
@@ -87,12 +88,20 @@ def run_monitoring(stop_event=None):
         reason = session.reason if session else ''
         log_info(f"Аутентификация: {state.value}, причина: {reason or '-'}")
 
+    challenge_check = None
+    try:
+        challenge_check = build_challenge_check(config, display)
+    except ValueError as error:
+        # Ошибка настройки политики не должна останавливать мониторинг
+        log_error(f'Задания отключены: {error}')
+
     settings = config.get('authentication', {})
     engine = AuthenticationEngine(
         lock_controller, maintenance, stop_event,
         session_timeout=settings.get('session_timeout_seconds', 20.0),
         cooldown_seconds=detection_interval,
         door_open_seconds=door_open_time,
+        challenge_check=challenge_check,
         on_state=show_authentication_state,
     )
 
@@ -154,7 +163,13 @@ def run_monitoring(stop_event=None):
                                 engine.cancel(str(error))
                                 return False, None, None
 
-                        engine.evaluate(session_id, recognize_current_track)
+                        if challenge_check is not None:
+                            challenge_check.bind(source)
+                        try:
+                            engine.evaluate(session_id, recognize_current_track)
+                        finally:
+                            if challenge_check is not None:
+                                challenge_check.release()
                         # Пара снята во время сопровождения этого лица, до
                         # допуска; вычисление уходит в поток, чтобы tick()
                         # не ждал геометрию и не продлевал открытие замка

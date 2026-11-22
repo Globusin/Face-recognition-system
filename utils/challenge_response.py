@@ -69,7 +69,24 @@ def eye_aspect_ratio(points):
     return float(average_height / width)
 
 
-def observe_face(image, timestamp, durations=None, *, verify_identity=True):
+def known_face_location(face_box, scale, image_shape):
+    """Переводит ROI (x, y, width, height) в координаты face_recognition"""
+    try:
+        x, y, width, height = (float(value) * scale for value in face_box)
+    except (TypeError, ValueError):
+        raise ValueError('landmarks_not_detected') from None
+    if (not all(np.isfinite(value) for value in (x, y, width, height))
+            or width <= 0 or height <= 0):
+        raise ValueError('landmarks_not_detected')
+    top, left = int(round(y)), int(round(x))
+    bottom, right = int(round(y + height)), int(round(x + width))
+    height_px, width_px = image_shape
+    if not (0 <= left < right <= width_px and 0 <= top < bottom <= height_px):
+        raise ValueError('landmarks_not_detected')
+    return top, right, bottom, left
+
+
+def observe_face(image, timestamp, durations=None, *, verify_identity=True, face_box=None):
     import face_recognition
 
     # Небольшой кадр снижает нагрузку на Pi, координаты дальше не сохраняются
@@ -81,7 +98,11 @@ def observe_face(image, timestamp, durations=None, *, verify_identity=True):
         rgb = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
 
     with record_duration(durations, 'face_detection'):
-        locations = face_recognition.face_locations(rgb, number_of_times_to_upsample=0, model='hog')
+        if face_box is None:
+            locations = face_recognition.face_locations(rgb, number_of_times_to_upsample=0, model='hog')
+        else:
+            # ROI уже найден при сопровождении: повторная детекция не нужна
+            locations = [known_face_location(face_box, scale, rgb.shape[:2])]
 
     if not locations:
         raise ValueError('face_lost')

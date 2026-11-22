@@ -99,6 +99,9 @@ similarity: 0.15  # Порог схожести (чем меньше, тем с�
 
 challenge_response:
   # Эксперимент, не включён в разрешение доступа
+  policy: disabled           # disabled | adaptive | always
+  adaptive_max_distance: 0.12  # Временный признак риска для adaptive, не калибровка
+  pipeline_count: 1          # Заданий в рабочем конвейере, чтобы уложиться в тайм-аут
   count: 3
   baseline_seconds: 0.6
   baseline_timeout: 12.0
@@ -166,7 +169,8 @@ logging:
   level: "INFO"  # Уровень логирования: DEBUG, INFO, WARNING, ERROR
   file: "logs/app.log"  # Путь к файлу логов
 
-# Лимит сессии, включая блокирующее распознавание серии кадров.
+# Лимит сессии, включая распознавание и задания. При включённой политике
+# заданий baseline_timeout и action_timeout должны в него укладываться.
 authentication:
   session_timeout_seconds: 20.0
   capture:

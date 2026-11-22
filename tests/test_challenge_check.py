@@ -1,0 +1,268 @@
+"""Политика заданий, привязка к сессии и выполнение без камер"""
+
+import unittest
+from types import SimpleNamespace
+from unittest.mock import Mock, patch
+
+import numpy as np
+
+from utils.authentication import AuthenticationSession, CheckResult, CheckStatus
+from utils.challenge_check import (
+    ChallengeCheck, build_challenge_check, challenge_policy_settings,
+)
+from utils.challenge_response import (
+    COMMANDS, FaceObservation, challenge_settings, observe_face,
+)
+from utils.display import NullDisplay
+from utils.face_observations import ObservationRejected
+
+
+class FakeClock:
+    def __init__(self):
+        self.value = 0.0
+
+    def __call__(self):
+        return self.value
+
+
+class FakeImage:
+    def __init__(self, yaw):
+        self.yaw = yaw
+
+
+class FakeSource:
+    """Выдаёт кадры с заданной последовательностью yaw"""
+
+    def __init__(self, clock, yaws, step=0.1, error=None, track_id='track-1'):
+        self.clock = clock
+        self.yaws = list(yaws)
+        self.step = step
+        self.error = error
+        self.track_id = track_id
+
+    def next(self, deadline=None):
+        if self.error is not None:
+            raise self.error
+        if not self.yaws:
+            raise ObservationRejected('face_lost')
+        self.clock.value += self.step
+        timestamp = self.clock.value
+        return SimpleNamespace(
+            primary=SimpleNamespace(
+                image=FakeImage(self.yaws.pop(0)),
+                timestamp_ns=int(timestamp * 1e9),
+            ),
+            face_box=(10, 10, 40, 40),
+            track_id=self.track_id,
+        )
+
+
+def fake_observe(image, timestamp, durations=None, *, verify_identity=True, face_box=None):
+    return FaceObservation(timestamp, 0.3, 0.3, image.yaw, None)
+
+
+def flow_settings(count=1):
+    settings = challenge_settings({})
+    settings['count'] = count
+    return settings
+
+
+def make_session(distance=0.10, session_id='session-1', deadline=100.0):
+    return AuthenticationSession(
+        session_id, 0.0, 0.0, deadline,
+        distance=distance, tracked_face_id='track-1',
+    )
+
+
+def make_check(policy='always', display=None, clock=None, adaptive_distance=0.12):
+    return ChallengeCheck(
+        flow_settings(), {'policy': policy, 'adaptive_max_distance': adaptive_distance},
+        display if display is not None else Mock(),
+        clock=clock if clock is not None else FakeClock(),
+    )
+
+
+class ChallengeExecutionTests(unittest.TestCase):
+    def setUp(self):
+        # Реальные кадры и dlib в этих проверках не нужны
+        patcher = patch('utils.challenge_check.observe_face', side_effect=fake_observe)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
+    def run_to_result(self, command, sign):
+        clock = FakeClock()
+        source = FakeSource(clock, [0.0] * 8 + [0.4 * sign] * 4 + [0.0] * 2)
+        display = Mock()
+        check = make_check(clock=clock, display=display)
+        check.bind(source)
+        with patch('utils.challenge_response.secrets.choice', return_value=command):
+            result = check(make_session())
+        return result, display
+
+    def test_both_turn_directions_pass_and_show_command(self):
+        for command, sign in (('TURN_LEFT', 1), ('TURN_RIGHT', -1)):
+            with self.subTest(command=command):
+                result, display = self.run_to_result(command, sign)
+                self.assertEqual(result.status, CheckStatus.PASS)
+                self.assertEqual(result.reason, 'challenge_passed')
+                shown = [call.args[1] for call in display.show_state.call_args_list]
+                self.assertIn(COMMANDS[command], shown)
+
+    def test_action_before_command_is_not_accepted(self):
+        clock = FakeClock()
+        source = FakeSource(clock, [0.4] * 20, step=1.0)
+        check = make_check(clock=clock)
+        check.bind(source)
+        result = check(make_session())
+        self.assertEqual(result.status, CheckStatus.FAIL)
+        self.assertEqual(result.reason, 'baseline_timeout')
+        shown = [call.args[1] for call in check.display.show_state.call_args_list]
+        for command in COMMANDS.values():
+            self.assertNotIn(command, shown)
+
+    def test_face_loss_cancels_attempt(self):
+        clock = FakeClock()
+        source = FakeSource(clock, [], error=ObservationRejected('face_lost'))
+        check = make_check(clock=clock)
+        check.bind(source)
+        result = check(make_session())
+        self.assertEqual(result.status, CheckStatus.FAIL)
+        self.assertEqual(result.reason, 'face_lost')
+
+    def test_track_change_cancels_attempt(self):
+        clock = FakeClock()
+        source = FakeSource(clock, [0.0] * 8, track_id='other')
+        check = make_check(clock=clock)
+        check.bind(source)
+        result = check(make_session())
+        self.assertEqual(result.status, CheckStatus.FAIL)
+        self.assertEqual(result.reason, 'track_changed')
+
+    def test_session_deadline_limits_challenge(self):
+        clock = FakeClock()
+        source = FakeSource(clock, [0.0] * 10, step=5.0)
+        check = make_check(clock=clock)
+        check.bind(source)
+        result = check(make_session(deadline=1.0))
+        self.assertEqual(result.status, CheckStatus.FAIL)
+        self.assertEqual(result.reason, 'timeout')
+
+    def test_result_cannot_be_reused_for_same_session(self):
+        clock = FakeClock()
+        source = FakeSource(clock, [0.0] * 8 + [0.4] * 4 + [0.0] * 2)
+        check = make_check(clock=clock)
+        check.bind(source)
+        session = make_session()
+        with patch('utils.challenge_response.secrets.choice', return_value='TURN_LEFT'):
+            self.assertEqual(check(session).status, CheckStatus.PASS)
+            second = check(session)
+        self.assertEqual(second.status, CheckStatus.FAIL)
+        self.assertEqual(second.reason, 'challenge_reused')
+
+    def test_prior_failure_blocks_challenge(self):
+        clock = FakeClock()
+        check = make_check(clock=clock)
+        check.bind(FakeSource(clock, [0.0] * 8))
+        session = make_session()
+        session.checks['stereo'] = CheckResult(CheckStatus.FAIL, 'spoof')
+        result = check(session)
+        self.assertEqual(result.status, CheckStatus.FAIL)
+        self.assertEqual(result.reason, 'prior_check_failed')
+
+    def test_missing_source_and_display_are_not_available(self):
+        result = make_check()(make_session())
+        self.assertEqual(result.status, CheckStatus.NOT_AVAILABLE)
+        self.assertEqual(result.reason, 'source_missing')
+
+        clock = FakeClock()
+        check = ChallengeCheck(
+            flow_settings(),
+            {'policy': 'always', 'adaptive_max_distance': 0.12},
+            NullDisplay(), clock=clock,
+        )
+        check.bind(FakeSource(clock, [0.0] * 8))
+        result = check(make_session())
+        self.assertEqual(result.status, CheckStatus.NOT_AVAILABLE)
+        self.assertEqual(result.reason, 'display_unavailable')
+
+    def test_display_error_fails_closed(self):
+        clock = FakeClock()
+        display = Mock()
+        display.show_state.side_effect = RuntimeError('tft')
+        check = make_check(clock=clock, display=display)
+        check.bind(FakeSource(clock, [0.0] * 8))
+        result = check(make_session())
+        self.assertEqual(result.status, CheckStatus.FAIL)
+        self.assertEqual(result.reason, 'display_error')
+
+
+class ChallengePolicyTests(unittest.TestCase):
+    def test_disabled_and_always(self):
+        self.assertFalse(make_check('disabled').should_run(make_session()))
+        self.assertTrue(make_check('always').should_run(make_session()))
+
+    def test_adaptive_uses_distance_threshold(self):
+        check = make_check('adaptive', adaptive_distance=0.12)
+        self.assertFalse(check.should_run(make_session(distance=0.10)))
+        self.assertTrue(check.should_run(make_session(distance=0.13)))
+        self.assertFalse(check.should_run(make_session(distance=None)))
+
+    def test_policy_settings_validation(self):
+        self.assertEqual(challenge_policy_settings({})['policy'], 'disabled')
+        normalized = challenge_policy_settings(
+            {'challenge_response': {'policy': 'ALWAYS'}},
+        )
+        self.assertEqual(normalized['policy'], 'always')
+        self.assertEqual(normalized['count'], 1)
+
+        invalid = (
+            {'policy': 'auto'},
+            {'adaptive_max_distance': 0},
+            {'pipeline_count': 0},
+            {'pipeline_count': 2.5},
+        )
+        for section in invalid:
+            with self.subTest(section=section):
+                with self.assertRaises(ValueError):
+                    challenge_policy_settings({'challenge_response': section})
+
+    def test_build_returns_none_for_disabled_policy(self):
+        self.assertIsNone(build_challenge_check({}, Mock()))
+        check = build_challenge_check(
+            {'challenge_response': {'policy': 'always', 'pipeline_count': 1}}, Mock(),
+        )
+        self.assertIsInstance(check, ChallengeCheck)
+        self.assertEqual(check.settings['count'], 1)
+
+
+class KnownFaceBoxTests(unittest.TestCase):
+    def face(self):
+        return {
+            'left_eye': [(10, 10), (11, 9), (12, 9), (13, 10), (12, 11), (11, 11)],
+            'right_eye': [(20, 10), (21, 9), (22, 9), (23, 10), (22, 11), (21, 11)],
+            'nose_tip': [(15, 15), (16, 16), (17, 17), (16, 18), (15, 19)],
+        }
+
+    def test_known_box_skips_repeated_detection(self):
+        image = np.zeros((120, 160, 3), np.uint8)
+        with patch('face_recognition.face_locations') as detect, \
+                patch('face_recognition.face_landmarks',
+                      return_value=[self.face()]) as landmarks, \
+                patch('face_recognition.face_encodings',
+                      return_value=[np.zeros(128)]), \
+                patch('utils.challenge_response.estimate_head_pose',
+                      return_value={'status': 'failed'}):
+            result = observe_face(image, 1.0, face_box=(10, 20, 40, 50))
+
+        detect.assert_not_called()
+        self.assertEqual(landmarks.call_args.kwargs['face_locations'], [(20, 50, 70, 10)])
+        self.assertAlmostEqual(result.yaw, 0.05)
+
+    def test_box_outside_image_is_rejected(self):
+        image = np.zeros((120, 160, 3), np.uint8)
+        with self.assertRaisesRegex(ValueError, 'landmarks_not_detected'):
+            observe_face(image, 1.0, face_box=(200, 200, 10, 10))
+
+
+if __name__ == '__main__':
+    unittest.main()

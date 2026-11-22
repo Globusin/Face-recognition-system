@@ -102,6 +102,22 @@ class AuthenticationEngineTests(unittest.TestCase):
         self.assertEqual(seen, [session_id])
         self.assertEqual(self.engine.state, State.GRANTED)
 
+    def test_skipped_check_is_recorded_without_denial(self):
+        class SkippedChallenge:
+            def should_run(self, session):
+                return False
+
+            def __call__(self, session):
+                raise AssertionError('проверка не должна вызываться')
+
+        self.engine.challenge_check = SkippedChallenge()
+        self.evaluate()
+        self.assertEqual(self.engine.state, State.GRANTED)
+        self.assertEqual(
+            self.engine.session.checks['challenge'].status, CheckStatus.SKIPPED,
+        )
+        self.assertNotIn(State.CHALLENGE, self.states)
+
     def test_error_and_failed_unlock_are_safe(self):
         self.evaluate_error = Mock(side_effect=RuntimeError('camera'))
         self.engine.evaluate(self.engine.begin(), self.evaluate_error)
