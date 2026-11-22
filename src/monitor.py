@@ -108,7 +108,6 @@ def run_monitoring(stop_event=None):
                     ),
                     measurement_limits(config.get('stereo_pad', {})),
                 ),
-                get_camera_manager(), liveness,
             )
     except ValueError as error:
         # Диагностика не должна мешать работе монитора
@@ -156,13 +155,14 @@ def run_monitoring(stop_event=None):
                                 return False, None, None
 
                         engine.evaluate(session_id, recognize_current_track)
-                        # Замер уходит в отдельный поток: tick() и закрытие
-                        # замка не должны ждать кадров и геометрии
+                        # Пара снята во время сопровождения этого лица, до
+                        # допуска; вычисление уходит в поток, чтобы tick()
+                        # не ждал геометрию и не продлевал открытие замка
                         if (stereo_collector is not None
                                 and should_collect_stereo(
                                     engine.state, engine.session,
                                 )):
-                            stereo_collector.submit(engine.session)
+                            stereo_collector.submit(engine.session, source.current)
             except ObservationRejected:
                 continue
             except Exception as error:

@@ -60,9 +60,6 @@ def liveness_settings(config):
     enabled = bool(section.get('enabled', False))
     dense_depth = bool(section.get('dense_depth', False))
     mounting_confirmed = section.get('mounting_confirmed') is True
-    measurement_timeout = _number(
-        section.get('measurement_timeout_s', 3.0), 'measurement_timeout_s',
-    )
 
     calibration_id = section.get('calibration_id')
     if calibration_id is not None and (
@@ -106,7 +103,6 @@ def liveness_settings(config):
         calibration_id=calibration_id,
         mounting_confirmed=mounting_confirmed,
         dense_depth=dense_depth,
-        measurement_timeout=measurement_timeout,
         classifier=classifier,
     )
 
@@ -277,19 +273,18 @@ class StereoLivenessDiagnostics:
 
 
 class StereoDiagnosticsCollector:
-    """Снимок пары после решения и обработка в отдельном потоке
+    """Обработка пары, снятой во время сопровождения того же лица
 
-    Замер не выполняется в основном цикле Monitor: там engine.tick() закрывает
-    замок, и любое ожидание кадров или геометрии продлевало бы открытие двери.
-    Одновременно выполняется не больше одной задачи, очередь не растёт. Пары
-    читаются из общего буфера FramePairer без изъятия, поэтому конкуренции
-    с основным циклом нет
+    Пара берётся из последнего наблюдения трека, по которому принималось решение,
+    поэтому измеряется именно предъявление, прошедшее распознавание, а не кадр
+    после открытия замка, куда мог попасть уже другой человек. Пара снята до
+    допуска, а вычисление геометрии выполняется в отдельном потоке: основной цикл
+    закрывает замок в engine.tick() и не должен ждать измерения. Одновременно
+    выполняется не больше одной задачи, очередь не растёт
     """
 
-    def __init__(self, diagnostics, manager, settings, clock=time.monotonic):
+    def __init__(self, diagnostics, clock=time.monotonic):
         self.diagnostics = diagnostics
-        self.manager = manager
-        self.timeout = settings['measurement_timeout']
         self.clock = clock
         self._lock = threading.Lock()
         self._thread = None
@@ -297,8 +292,8 @@ class StereoDiagnosticsCollector:
         self.skipped = 0
         self.completed = 0
 
-    def submit(self, session):
-        """Запускает замер, не дожидаясь кадров и вычислений"""
+    def submit(self, session, observation):
+        """Запускает замер, не дожидаясь вычислений"""
         with self._lock:
             if self._closed:
                 return False
@@ -307,7 +302,7 @@ class StereoDiagnosticsCollector:
                 self.skipped += 1
                 return False
             self._thread = threading.Thread(
-                target=self._run, args=(session,),
+                target=self._run, args=(session, observation),
                 name='stereo-diagnostics', daemon=True,
             )
             self._thread.start()
@@ -321,18 +316,15 @@ class StereoDiagnosticsCollector:
         if thread is not None:
             thread.join(timeout)
 
-    def _run(self, session):
+    def _run(self, session, observation):
         started = self.clock()
         try:
-            if not self.manager.dual_mode:
-                raise ValueError('Нужны две камеры')
-            after = self.manager.get_status()['pairing']['paired_frames']
-            pair = self.manager.get_pair(
-                after_number=after, timeout=self.timeout, latest=True,
-            )
-            if pair is None:
-                raise ValueError('Не удалось получить свежую пару кадров')
-            result = self.diagnostics.measure(pair)
+            if observation is None or observation.pair is None:
+                raise ValueError('Нет пары кадров: нужны две камеры')
+            if (observation.track_id is None
+                    or observation.track_id != session.tracked_face_id):
+                raise ValueError('Трек лица изменился после распознавания')
+            result = self.diagnostics.measure(observation.pair)
         except Exception as error:
             log_error(f"Стерео-диагностика недоступна: {error}")
             result = dict(

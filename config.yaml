@@ -63,7 +63,6 @@ stereo_liveness:
   calibration_id: null       # Каталог в stereo_calibration.output_dir
   mounting_confirmed: false  # Требуется для загрузки сохранённой калибровки
   dense_depth: false         # StereoSGBM тяжелее, включать вручную
-  measurement_timeout_s: 3.0
   classifier:
     min_points: 25
     max_reprojection_px: 4.0

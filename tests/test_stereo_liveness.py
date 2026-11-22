@@ -3,6 +3,7 @@
 import threading
 import time
 import unittest
+from types import SimpleNamespace
 from unittest.mock import Mock, patch
 
 import numpy as np
@@ -113,7 +114,6 @@ class ClassifierTests(unittest.TestCase):
         self.assertAlmostEqual(custom['classifier']['live_plane_rms_mm'], 4.0)
 
         invalid = (
-            {'measurement_timeout_s': 0},
             {'calibration_id': 'short'},
             {'classifier': {'min_points': 2}},
             {'classifier': {'live_plane_rms_mm': 1.0}},
@@ -268,20 +268,18 @@ class CollectorTests(unittest.TestCase):
     """Замер не должен задерживать основной цикл, который закрывает замок"""
 
     def setUp(self):
-        self.manager = Mock()
-        self.manager.dual_mode = True
-        self.manager.get_status.return_value = {'pairing': {'paired_frames': 5}}
+        self.session = AuthenticationSession(
+            'abc', 0.0, 0.0, 10.0, tracked_face_id='track-1',
+        )
         self.pair = Mock(number=6, delta_ms=3.0)
-        self.manager.get_pair.return_value = self.pair
-        self.session = AuthenticationSession('abc', 0.0, 0.0, 10.0)
-        self.settings = {'measurement_timeout': 1.0}
+        self.observation = SimpleNamespace(pair=self.pair, track_id='track-1')
 
     def test_measurement_runs_in_worker_and_is_stored(self):
         diagnostics = Mock()
         diagnostics.measure.return_value = {'decision': LIVE, 'reason': 'ok'}
-        collector = StereoDiagnosticsCollector(diagnostics, self.manager, self.settings)
+        collector = StereoDiagnosticsCollector(diagnostics)
 
-        self.assertTrue(collector.submit(self.session))
+        self.assertTrue(collector.submit(self.session, self.observation))
         collector.close()
 
         diagnostics.measure.assert_called_once_with(self.pair)
@@ -303,13 +301,13 @@ class CollectorTests(unittest.TestCase):
 
         diagnostics = Mock()
         diagnostics.measure.side_effect = measure
-        collector = StereoDiagnosticsCollector(diagnostics, self.manager, self.settings)
+        collector = StereoDiagnosticsCollector(diagnostics)
 
-        self.assertTrue(collector.submit(self.session))
+        self.assertTrue(collector.submit(self.session, self.observation))
         self.assertTrue(started.wait(2.0))
         self.assertNotEqual(worker_thread['id'], threading.get_ident())
         # Второй замер во время работы пропускается, а не копится в очереди
-        self.assertFalse(collector.submit(self.session))
+        self.assertFalse(collector.submit(self.session, self.observation))
         self.assertEqual(collector.skipped, 1)
 
         release.set()
@@ -319,9 +317,9 @@ class CollectorTests(unittest.TestCase):
     def test_measurement_error_becomes_unknown(self):
         diagnostics = Mock()
         diagnostics.measure.side_effect = RuntimeError('Потеря лица')
-        collector = StereoDiagnosticsCollector(diagnostics, self.manager, self.settings)
+        collector = StereoDiagnosticsCollector(diagnostics)
 
-        collector.submit(self.session)
+        collector.submit(self.session, self.observation)
         collector.close()
 
         stored = self.session.diagnostics['stereo']
@@ -329,20 +327,18 @@ class CollectorTests(unittest.TestCase):
         self.assertEqual(stored['status'], 'not_measured')
         self.assertFalse(stored['access_granted'])
 
-    def test_missing_pair_and_single_camera_are_unknown(self):
-        cases = (
-            ('pair', lambda: setattr(self.manager, 'get_pair', Mock(return_value=None))),
-            ('single', lambda: setattr(self.manager, 'dual_mode', False)),
-        )
-        for name, prepare in cases:
+    def test_missing_pair_and_foreign_track_are_unknown(self):
+        cases = {
+            'pair': SimpleNamespace(pair=None, track_id='track-1'),
+            'track': SimpleNamespace(pair=Mock(), track_id='other'),
+            'no_track': SimpleNamespace(pair=Mock(), track_id=None),
+            'observation': None,
+        }
+        for name, observation in cases.items():
             with self.subTest(name=name):
-                self.setUp()
-                prepare()
                 diagnostics = Mock()
-                collector = StereoDiagnosticsCollector(
-                    diagnostics, self.manager, self.settings,
-                )
-                collector.submit(self.session)
+                collector = StereoDiagnosticsCollector(diagnostics)
+                collector.submit(self.session, observation)
                 collector.close()
                 self.assertEqual(
                     self.session.diagnostics['stereo']['decision'], UNKNOWN,
@@ -350,9 +346,9 @@ class CollectorTests(unittest.TestCase):
                 diagnostics.measure.assert_not_called()
 
     def test_closed_collector_rejects_tasks(self):
-        collector = StereoDiagnosticsCollector(Mock(), self.manager, self.settings)
+        collector = StereoDiagnosticsCollector(Mock())
         collector.close()
-        self.assertFalse(collector.submit(self.session))
+        self.assertFalse(collector.submit(self.session, self.observation))
         self.assertNotIn('stereo', self.session.diagnostics)
 
 
