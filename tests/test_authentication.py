@@ -136,6 +136,15 @@ class AuthenticationEngineTests(unittest.TestCase):
         self.assertEqual(self.engine.session.reason, 'cancelled_in_policy')
         self.lock.unlock.assert_not_called()
 
+    def test_policy_denial_prevents_unlock(self):
+        from utils.access.decision import AccessPolicy
+
+        self.engine.policy = AccessPolicy(stereo_mode='required')
+        self.evaluate()
+        self.assertEqual(self.engine.state, State.DENIED)
+        self.assertEqual(self.engine.session.reason, 'stereo_required')
+        self.lock.unlock.assert_not_called()
+
     def test_error_and_failed_unlock_are_safe(self):
         self.evaluate_error = Mock(side_effect=RuntimeError('camera'))
         self.engine.evaluate(self.engine.begin(), self.evaluate_error)

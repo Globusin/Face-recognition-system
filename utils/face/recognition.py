@@ -302,12 +302,17 @@ def recognize_face_from_embeddings_series(embeddings_series):
         evidence.add(*match_embedding(embedding))
     return _decision_result(evidence.result())
 
-def _recognize_fixed(observation_source, deadline):
+def _recognize_fixed(observation_source, deadline, on_pair=None):
     """Фиксированная серия кадров из наблюдений текущего трека"""
     frames_count, _, frame_delay, _ = get_multi_frame_recognition_config()
     embeddings_series = []
+    pair_sent = False
     for observation in observation_source.observations(
             frames_count, frame_delay, deadline):
+        if on_pair is not None and not pair_sent and observation.pair is not None:
+            # Пара уходит в стереозубр параллельно с оставшимися кадрами
+            on_pair(observation.pair)
+            pair_sent = True
         embeddings = get_embeddings_from_frame(
             observation.primary.image, observation.face_box,
         )
@@ -317,7 +322,7 @@ def _recognize_fixed(observation_source, deadline):
     result = recognize_face_from_embeddings_series(embeddings_series)
     return _confirm_fresh_after_database(observation_source, deadline, result)
 
-def _recognize_adaptive(observation_source, deadline):
+def _recognize_adaptive(observation_source, deadline, on_pair=None):
     """Накопление свидетельств по одному кадру до решения или лимита попытки"""
     settings = get_adaptive_recognition_config()
     evidence = _create_evidence(
@@ -330,11 +335,16 @@ def _recognize_adaptive(observation_source, deadline):
     clock = getattr(observation_source, 'clock', time.monotonic)
     attempt_started = clock()
     decision = None
+    pair_sent = False
 
     # Одно соединение на попытку: поиск по базе выполняется для каждого кадра
     with recognition_db_session():
         for observation in observation_source.observations(
                 settings['max_frames'], settings['frame_interval'], deadline):
+            if on_pair is not None and not pair_sent and observation.pair is not None:
+                # Пара уходит в стереозубр параллельно с оставшимися кадрами
+                on_pair(observation.pair)
+                pair_sent = True
             embeddings = get_embeddings_from_frame(
                 observation.primary.image, observation.face_box,
             )
@@ -353,11 +363,11 @@ def _recognize_adaptive(observation_source, deadline):
     return _confirm_fresh_after_database(observation_source, deadline, result)
 
 @measure_time("Полное распознавание с камеры", summary=True)
-def recognize_face_from_camera(observation_source=None, deadline=None):
+def recognize_face_from_camera(observation_source=None, deadline=None, on_pair=None):
     """Распознаёт лицо с камеры и проверяет его наличие в базе данных
 
-    Без источника наблюдений используется прежний захват одиночной камеры:
-    адаптивный режим требует потока наблюдений от CameraManager
+    on_pair передаёт первую пару кадров трека, чтобы стереопроверка могла
+    выполняться параллельно с оставшимися кадрами распознавания
     """
     if observation_source is None:
         frames_count, _, frame_delay, _ = get_multi_frame_recognition_config()
@@ -367,5 +377,5 @@ def recognize_face_from_camera(observation_source=None, deadline=None):
         return recognize_face_from_embeddings_series(embeddings_series)
 
     if get_recognition_mode() == 'fixed':
-        return _recognize_fixed(observation_source, deadline)
-    return _recognize_adaptive(observation_source, deadline)
+        return _recognize_fixed(observation_source, deadline, on_pair)
+    return _recognize_adaptive(observation_source, deadline, on_pair)

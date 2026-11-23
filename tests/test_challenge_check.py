@@ -7,16 +7,16 @@ from unittest.mock import Mock, patch
 import numpy as np
 
 from utils.access.authentication import AuthenticationSession, CheckResult, CheckStatus
+from utils.access.decision import AccessPolicy
 from utils.challenge.challenge_check import (
     ChallengeCheck, UnavailableChallengeCheck, build_challenge_check,
-    challenge_policy_settings,
 )
 from utils.challenge.challenge_response import (
     COMMANDS, FaceObservation, challenge_settings, observe_face,
 )
 from utils.device.display import NullDisplay
 from utils.face.face_observations import ObservationRejected
-from utils.stereo.stereo_liveness import LIVE, SPOOF, UNKNOWN
+from utils.stereo.stereo_liveness import LIVE, UNKNOWN
 
 
 class FakeClock:
@@ -77,11 +77,10 @@ def make_session(distance=0.10, session_id='session-1', deadline=100.0, user_id=
     )
 
 
-def make_check(policy='always', display=None, clock=None, liveness=None):
+def make_check(policy='always', display=None, clock=None):
     return ChallengeCheck(
-        flow_settings(), {'policy': policy, 'count': 1},
+        flow_settings(), AccessPolicy(challenge_mode=policy, challenge_count=1),
         display if display is not None else Mock(),
-        liveness,
         clock=clock if clock is not None else FakeClock(),
     )
 
@@ -237,98 +236,32 @@ class ChallengePolicyTests(unittest.TestCase):
         self.assertFalse(make_check('disabled').should_run(make_session()))
         self.assertTrue(make_check('always').should_run(make_session()))
 
-    def test_adaptive_uses_stereo_liveness(self):
-        for verdict, expected in ((LIVE, False), (UNKNOWN, True), (SPOOF, True)):
+    def test_adaptive_depends_on_stereo_verdict(self):
+        for verdict, expected in ((LIVE, False), (UNKNOWN, True), (None, True)):
             with self.subTest(verdict=verdict):
-                clock = FakeClock()
-                liveness = Mock()
-                liveness.measure.return_value = {'decision': verdict}
-                check = make_check('adaptive', clock=clock, liveness=liveness)
-                check.bind(FakeSource(clock, [0.0] * 2))
                 session = make_session()
-                self.assertEqual(check.should_run(session), expected)
-                self.assertEqual(session.diagnostics['stereo']['decision'], verdict)
-
-    def test_spoof_denies_without_running_challenge(self):
-        clock = FakeClock()
-        liveness = Mock()
-        liveness.measure.return_value = {'decision': SPOOF}
-        check = make_check('adaptive', clock=clock, liveness=liveness)
-        check.bind(FakeSource(clock, [0.0] * 2))
-        session = make_session()
-        self.assertTrue(check.should_run(session))
-        result = check(session)
-        self.assertEqual(result.status, CheckStatus.FAIL)
-        self.assertEqual(result.reason, 'liveness_spoof')
-
-    def test_live_verdict_skips_without_second_measurement(self):
-        clock = FakeClock()
-        liveness = Mock()
-        liveness.measure.return_value = {'decision': LIVE}
-        check = make_check('adaptive', clock=clock, liveness=liveness)
-        check.bind(FakeSource(clock, [0.0] * 2))
-        session = make_session()
-        self.assertFalse(check.should_run(session))
-        self.assertEqual(check(session).status, CheckStatus.SKIPPED)
-        self.assertEqual(liveness.measure.call_count, 1)
-
-    def test_adaptive_without_stereo_requires_challenge(self):
-        check = make_check('adaptive')
-        check.bind(FakeSource(FakeClock(), [0.0] * 2))
-        self.assertTrue(check.should_run(make_session()))
-
-    def test_adaptive_measurement_failure_requires_challenge(self):
-        clock = FakeClock()
-        liveness = Mock()
-        liveness.measure.side_effect = ValueError('нет калибровки')
-        check = make_check('adaptive', clock=clock, liveness=liveness)
-        check.bind(FakeSource(clock, [0.0] * 2))
-        self.assertTrue(check.should_run(make_session()))
-
-    def test_policy_settings_validation(self):
-        self.assertEqual(challenge_policy_settings({})['policy'], 'disabled')
-        normalized = challenge_policy_settings(
-            {'challenge_response': {'policy': 'ALWAYS'}},
-        )
-        self.assertEqual(normalized['policy'], 'always')
-        self.assertEqual(normalized['count'], 1)
-
-        invalid = (
-            {'policy': 'auto'},
-            {'pipeline_count': 0},
-            {'pipeline_count': 2.5},
-        )
-        for section in invalid:
-            with self.subTest(section=section):
-                with self.assertRaises(ValueError):
-                    challenge_policy_settings({'challenge_response': section})
+                if verdict is not None:
+                    session.diagnostics['stereo'] = {'decision': verdict}
+                self.assertEqual(make_check('adaptive').should_run(session), expected)
 
     def test_build_returns_none_for_disabled_policy(self):
-        self.assertIsNone(build_challenge_check({}, Mock()))
-        self.assertIsNone(build_challenge_check(
-            {'challenge_response': {'policy': 'disabled', 'count': 0}}, Mock(),
-        ))
+        self.assertIsNone(build_challenge_check({}, Mock(), AccessPolicy()))
         check = build_challenge_check(
-            {'challenge_response': {'policy': 'always', 'pipeline_count': 1}}, Mock(),
+            {'challenge_response': {'count': 3}},
+            Mock(), AccessPolicy(challenge_mode='always', challenge_count=1),
         )
         self.assertIsInstance(check, ChallengeCheck)
         self.assertEqual(check.settings['count'], 1)
 
     def test_config_error_does_not_disable_mandatory_check(self):
         check = build_challenge_check(
-            {'challenge_response': {'policy': 'always', 'count': 0}}, Mock(),
+            {'challenge_response': {'count': 0}},
+            Mock(), AccessPolicy(challenge_mode='always'),
         )
         self.assertIsInstance(check, UnavailableChallengeCheck)
         self.assertTrue(check.should_run(make_session()))
         result = check(make_session())
         self.assertEqual(result.status, CheckStatus.NOT_AVAILABLE)
-
-    def test_unknown_policy_fails_closed(self):
-        check = build_challenge_check(
-            {'challenge_response': {'policy': 'alway'}}, Mock(),
-        )
-        self.assertIsInstance(check, UnavailableChallengeCheck)
-        self.assertEqual(check(make_session()).status, CheckStatus.NOT_AVAILABLE)
 
 
 class KnownFaceBoxTests(unittest.TestCase):

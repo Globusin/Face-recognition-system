@@ -8,16 +8,15 @@ from unittest.mock import Mock, patch
 
 import numpy as np
 
-from utils.access.authentication import (
-    AuthenticationSession, AuthenticationState, CheckResult, CheckStatus,
-)
+from utils.access.authentication import AuthenticationSession, CheckStatus
 from utils.capture.frame_pairing import CameraFrame, FramePair
 from utils.stereo.stereo_liveness import (
     LIVE,
     SPOOF,
     UNKNOWN,
-    StereoDiagnosticsCollector,
+    StereoCheck,
     StereoLivenessDiagnostics,
+    StereoWorker,
     check_status,
     liveness_settings,
     measure_pair,
@@ -107,13 +106,18 @@ class ClassifierTests(unittest.TestCase):
 
     def test_settings_validation(self):
         custom = liveness_settings({'stereo_liveness': {
-            'enabled': True, 'calibration_id': 'a' * 32, 'mounting_confirmed': True,
+            'mode': 'required', 'parallel': True, 'result_timeout_s': 2.0,
+            'calibration_id': 'a' * 32, 'mounting_confirmed': True,
             'classifier': {'live_plane_rms_mm': 4.0},
         }})
-        self.assertTrue(custom['enabled'])
+        self.assertEqual(custom['mode'], 'required')
+        self.assertTrue(custom['parallel'])
+        self.assertAlmostEqual(custom['result_timeout'], 2.0)
         self.assertAlmostEqual(custom['classifier']['live_plane_rms_mm'], 4.0)
 
         invalid = (
+            {'mode': 'always'},
+            {'result_timeout_s': 0},
             {'calibration_id': 'short'},
             {'classifier': {'min_points': 2}},
             {'classifier': {'live_plane_rms_mm': 1.0}},
@@ -188,7 +192,8 @@ class DiagnosticsTests(unittest.TestCase):
     def setUp(self):
         self.manager = Mock()
         self.settings = liveness_settings({'stereo_liveness': {
-            'enabled': True, 'calibration_id': 'a' * 32, 'mounting_confirmed': True,
+            'mode': 'advisory', 'calibration_id': 'a' * 32,
+            'mounting_confirmed': True,
         }})
         self.pair = Mock(number=5, delta_ms=4.0)
         self.metadata = {
@@ -197,7 +202,7 @@ class DiagnosticsTests(unittest.TestCase):
         }
 
     def test_missing_calibration_id_is_reported(self):
-        settings = liveness_settings({'stereo_liveness': {'enabled': True}})
+        settings = liveness_settings({'stereo_liveness': {'mode': 'required'}})
         diagnostics = StereoLivenessDiagnostics(
             self.manager, settings, 'data/calibration', dict(DEFAULT_LIMITS),
         )
@@ -235,121 +240,100 @@ class DiagnosticsTests(unittest.TestCase):
                     diagnostics.measure(self.pair)
 
 
-class CollectionConditionTests(unittest.TestCase):
-    """Замер собирается и при отказе: иначе выборка PAD смещена к успешным входам"""
-
-    def session(self, recognized=True):
-        session = AuthenticationSession('abc', 0.0, 0.0, 10.0)
-        if recognized:
-            session.checks['recognition'] = CheckResult(CheckStatus.FAIL)
-        return session
-
-    def test_evaluated_attempts_are_measured(self):
-        from src.monitor import should_collect_stereo
-        for state in (AuthenticationState.GRANTED, AuthenticationState.DENIED):
-            with self.subTest(state=state):
-                self.assertTrue(should_collect_stereo(state, self.session()))
-
-    def test_aborted_attempts_are_skipped(self):
-        from src.monitor import should_collect_stereo
-        self.assertFalse(
-            should_collect_stereo(AuthenticationState.DENIED, self.session(False))
-        )
-        self.assertFalse(
-            should_collect_stereo(AuthenticationState.ERROR, self.session())
-        )
-        self.assertFalse(
-            should_collect_stereo(AuthenticationState.COOLDOWN, self.session())
-        )
-        self.assertFalse(should_collect_stereo(AuthenticationState.GRANTED, None))
-
-
-class CollectorTests(unittest.TestCase):
-    """Замер не должен задерживать основной цикл, который закрывает замок"""
-
-    def setUp(self):
-        self.session = AuthenticationSession(
-            'abc', 0.0, 0.0, 10.0, tracked_face_id='track-1',
-        )
-        self.pair = Mock(number=6, delta_ms=3.0)
-        self.observation = SimpleNamespace(pair=self.pair, track_id='track-1')
-
-    def test_measurement_runs_in_worker_and_is_stored(self):
+class WorkerTests(unittest.TestCase):
+    def test_result_belongs_to_its_session(self):
         diagnostics = Mock()
-        diagnostics.measure.return_value = {'decision': LIVE, 'reason': 'ok'}
-        collector = StereoDiagnosticsCollector(diagnostics)
+        diagnostics.measure.return_value = {'decision': LIVE}
+        worker = StereoWorker(diagnostics)
 
-        self.assertTrue(collector.submit(self.session, self.observation))
-        collector.close()
+        self.assertTrue(worker.submit('session-1', object()))
+        result = worker.take('session-1', 1.0)
+        worker.close()
 
-        diagnostics.measure.assert_called_once_with(self.pair)
-        stored = self.session.diagnostics['stereo']
-        self.assertEqual(stored['decision'], LIVE)
-        self.assertIn('worker_elapsed_seconds', stored)
-        self.assertEqual(collector.completed, 1)
+        self.assertEqual(result['decision'], LIVE)
+        self.assertIsNone(worker.take('session-2', 0.05))
 
-    def test_submit_returns_before_measurement_finishes(self):
+    def test_busy_worker_skips_new_job(self):
         started = threading.Event()
         release = threading.Event()
-        worker_thread = {}
 
         def measure(pair):
-            worker_thread['id'] = threading.get_ident()
             started.set()
             release.wait(2.0)
-            return {'decision': LIVE, 'reason': 'ok'}
+            return {'decision': LIVE}
 
         diagnostics = Mock()
         diagnostics.measure.side_effect = measure
-        collector = StereoDiagnosticsCollector(diagnostics)
+        worker = StereoWorker(diagnostics)
+        try:
+            self.assertTrue(worker.submit('session-1', object()))
+            self.assertTrue(started.wait(2.0))
+            self.assertFalse(worker.submit('session-2', object()))
+            self.assertEqual(worker.skipped, 1)
+        finally:
+            release.set()
+            worker.close()
+        self.assertIsNone(worker.take('session-2', 0.01))
 
-        self.assertTrue(collector.submit(self.session, self.observation))
-        self.assertTrue(started.wait(2.0))
-        self.assertNotEqual(worker_thread['id'], threading.get_ident())
-        # Второй замер во время работы пропускается, а не копится в очереди
-        self.assertFalse(collector.submit(self.session, self.observation))
-        self.assertEqual(collector.skipped, 1)
-
-        release.set()
-        collector.close()
-        self.assertEqual(diagnostics.measure.call_count, 1)
-
-    def test_measurement_error_becomes_unknown(self):
+    def test_error_becomes_unknown(self):
         diagnostics = Mock()
-        diagnostics.measure.side_effect = RuntimeError('Потеря лица')
-        collector = StereoDiagnosticsCollector(diagnostics)
+        diagnostics.measure.side_effect = RuntimeError('нет калибровки')
+        worker = StereoWorker(diagnostics)
+        worker.submit('session-1', object())
+        result = worker.take('session-1', 1.0)
+        worker.close()
 
-        collector.submit(self.session, self.observation)
-        collector.close()
+        self.assertEqual(result['decision'], UNKNOWN)
+        self.assertEqual(result['status'], 'not_measured')
 
-        stored = self.session.diagnostics['stereo']
-        self.assertEqual(stored['decision'], UNKNOWN)
-        self.assertEqual(stored['status'], 'not_measured')
-        self.assertFalse(stored['access_granted'])
 
-    def test_missing_pair_and_foreign_track_are_unknown(self):
-        cases = {
-            'pair': SimpleNamespace(pair=None, track_id='track-1'),
-            'track': SimpleNamespace(pair=Mock(), track_id='other'),
-            'no_track': SimpleNamespace(pair=Mock(), track_id=None),
-            'observation': None,
-        }
-        for name, observation in cases.items():
-            with self.subTest(name=name):
+class StereoCheckTests(unittest.TestCase):
+    def setUp(self):
+        self.diagnostics = Mock()
+        self.diagnostics.measure.return_value = {'decision': LIVE, 'reason': ''}
+        self.session = AuthenticationSession(
+            'session-1', 0.0, 0.0, 100.0, tracked_face_id='track-1', user_id=7,
+        )
+
+    def source(self):
+        source = Mock()
+        source.next.return_value = SimpleNamespace(pair=object())
+        return source
+
+    def test_required_live_passes_and_is_stored(self):
+        check = StereoCheck(self.diagnostics, 'required')
+        check.bind(self.source())
+        self.assertEqual(check(self.session).status, CheckStatus.PASS)
+        self.assertEqual(self.session.diagnostics['stereo']['decision'], LIVE)
+
+    def test_required_spoof_and_unknown_deny(self):
+        for decision, status in ((SPOOF, CheckStatus.FAIL),
+                                 (UNKNOWN, CheckStatus.NOT_AVAILABLE)):
+            with self.subTest(decision=decision):
                 diagnostics = Mock()
-                collector = StereoDiagnosticsCollector(diagnostics)
-                collector.submit(self.session, observation)
-                collector.close()
-                self.assertEqual(
-                    self.session.diagnostics['stereo']['decision'], UNKNOWN,
-                )
-                diagnostics.measure.assert_not_called()
+                diagnostics.measure.return_value = {'decision': decision, 'reason': 'x'}
+                check = StereoCheck(diagnostics, 'required')
+                check.bind(self.source())
+                self.assertEqual(check(self.session).status, status)
 
-    def test_closed_collector_rejects_tasks(self):
-        collector = StereoDiagnosticsCollector(Mock())
-        collector.close()
-        self.assertFalse(collector.submit(self.session, self.observation))
-        self.assertNotIn('stereo', self.session.diagnostics)
+    def test_advisory_never_affects_access(self):
+        self.diagnostics.measure.return_value = {'decision': SPOOF, 'reason': 'x'}
+        check = StereoCheck(self.diagnostics, 'advisory')
+        check.bind(self.source())
+        self.assertEqual(check(self.session).status, CheckStatus.SKIPPED)
+        self.assertEqual(self.session.diagnostics['stereo']['decision'], SPOOF)
+
+    def test_missing_data_required_is_unavailable(self):
+        check = StereoCheck(self.diagnostics, 'required')
+        self.assertEqual(check(self.session).status, CheckStatus.NOT_AVAILABLE)
+
+    def test_parallel_uses_worker_result(self):
+        worker = Mock()
+        worker.take.return_value = {'decision': LIVE, 'reason': ''}
+        check = StereoCheck(self.diagnostics, 'required', worker=worker, timeout=1.0)
+        self.assertEqual(check(self.session).status, CheckStatus.PASS)
+        worker.take.assert_called_once_with('session-1', 1.0)
+        self.diagnostics.measure.assert_not_called()
 
 
 if __name__ == '__main__':

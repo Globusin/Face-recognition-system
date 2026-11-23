@@ -187,13 +187,19 @@ class FakeObservationSource:
         self.clock = FakeClock(step)
         self.used = 0
         self.next_calls = 0
+        self.last_pair = None
+        self.first_pair = None
 
     def observations(self, count, interval, deadline):
         for _ in range(min(count, self.available)):
             self.clock.value += self.clock.step
             self.used += 1
+            self.last_pair = Mock()
+            if self.first_pair is None:
+                self.first_pair = self.last_pair
             yield SimpleNamespace(
                 primary=SimpleNamespace(image=object()), face_box=(0, 0, 1, 1),
+                pair=self.last_pair,
             )
 
     def check_cancelled(self, deadline=None):
@@ -267,6 +273,21 @@ class RecognitionModeTests(unittest.TestCase):
         self.assertEqual(embed.call_count, 5)
         self.assertEqual(source.used, 5)
         self.assertEqual(source.next_calls, 1)
+
+    def test_first_pair_is_handed_to_stereo_once(self):
+        source = FakeObservationSource(available=7)
+        pairs = []
+        with patch('utils.face.recognition.get_recognition_mode', return_value='adaptive'), \
+                patch('utils.face.recognition.get_adaptive_recognition_config',
+                      return_value=ADAPTIVE_SETTINGS), \
+                patch('utils.face.recognition.get_embeddings_from_frame',
+                      return_value=[[1.0]]), \
+                patch('utils.face.recognition.match_embedding', return_value=(1, 0.10)):
+            recognize_face_from_camera(
+                source, deadline=100.0, on_pair=pairs.append,
+            )
+        self.assertEqual(len(pairs), 1)
+        self.assertIs(pairs[0], source.first_pair)
 
     def test_adaptive_mode_limits_attempt_duration(self):
         source = FakeObservationSource(available=7, step=1.0)

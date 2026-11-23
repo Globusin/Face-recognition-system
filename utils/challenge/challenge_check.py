@@ -11,34 +11,17 @@ from utils.capture.camera_manager import CameraUnavailableError
 from utils.challenge.challenge_response import (
     COMMANDS, ChallengeFlow, challenge_settings, observe_face,
 )
+from utils.common.logger import log_error, log_warning
 from utils.device.display import DisplayState, NullDisplay
 from utils.face.face_observations import ObservationRejected
 from utils.face.recognition import get_embeddings_from_frame, match_embedding
-from utils.common.logger import log_error, log_warning
-from utils.stereo.stereo_liveness import LIVE, SPOOF
 
-POLICIES = ('disabled', 'adaptive', 'always')
-DEFAULT_PIPELINE_COUNT = 1
 PROMPT_BASELINE = 'Смотрите\nпрямо\nГлаза открыты'
 PROMPT_RETURN = 'Вернитесь\nв исходное\nположение'
 
 
 class ChallengeDisplayError(RuntimeError):
     """Команду не удалось показать: проверка без инструкции недействительна"""
-
-
-def challenge_policy_settings(config):
-    """Политика заданий для рабочего конвейера"""
-    section = config.get('challenge_response', {}) or {}
-    policy = str(section.get('policy', 'disabled')).strip().lower()
-    if policy not in POLICIES:
-        raise ValueError(f'Неизвестная политика заданий: {policy}')
-
-    count = section.get('pipeline_count', DEFAULT_PIPELINE_COUNT)
-    if isinstance(count, bool) or not isinstance(count, int) or not 1 <= count <= 5:
-        raise ValueError('pipeline_count должен быть целым числом от 1 до 5')
-
-    return dict(policy=policy, count=count)
 
 
 class UnavailableChallengeCheck:
@@ -58,26 +41,24 @@ class UnavailableChallengeCheck:
         return CheckResult(CheckStatus.NOT_AVAILABLE, self.reason)
 
 
-def build_challenge_check(config, display, liveness=None):
+def build_challenge_check(config, display, policy):
     """Создаёт адаптер заданий или None, если политика явно отключена
 
     Ошибка конфигурации при непустой политике не считается отключением:
     возвращается недоступная проверка, чтобы доступ оставался запрещён
     """
-    section = config.get('challenge_response', {}) or {}
-    raw_policy = str(section.get('policy', 'disabled')).strip().lower()
-    if raw_policy == 'disabled':
+    if policy.challenge_mode == 'disabled':
         return None
 
+    section = config.get('challenge_response', {}) or {}
     try:
-        policy = challenge_policy_settings(config)
         settings = challenge_settings(section)
     except ValueError as error:
         log_error(f'Задания: ошибка конфигурации, проверка недоступна: {error}')
         return UnavailableChallengeCheck(f'challenge_config_error: {error}')
 
-    settings['count'] = policy['count']
-    return ChallengeCheck(settings, policy, display, liveness)
+    settings['count'] = policy.challenge_count
+    return ChallengeCheck(settings, policy, display)
 
 
 class ChallengeCheck:
@@ -90,16 +71,13 @@ class ChallengeCheck:
     результат той же сессии не используется
     """
 
-    def __init__(self, settings, policy, display, liveness=None,
-                 clock=time.monotonic):
+    def __init__(self, settings, policy, display, clock=time.monotonic):
         self.settings = settings
-        self.policy = policy['policy']
+        self.policy = policy
         self.display = display
-        self.liveness = liveness
         self.clock = clock
         self.source = None
         self._used_sessions = set()
-        self._verdict = None
 
     def bind(self, source):
         """Привязывает источник наблюдений текущей попытки"""
@@ -111,20 +89,8 @@ class ChallengeCheck:
         self.source = None
 
     def should_run(self, session):
-        """Нужна ли проверка по политике для этой сессии
-
-        В адаптивном режиме дополнительное подтверждение нужно, если проверка
-        объёма лица не дала LIVE. Отсутствие стереоданных — тоже повод
-        запросить задание, а не пропустить проверку. Обнаруженный SPOOF
-        заданием не исправляется: проверка сразу откажет
-        """
-        if self.policy == 'disabled':
-            return False
-        if self.policy == 'always':
-            return True
-        verdict = self._liveness_verdict(session)
-        self._verdict = (session.session_id, verdict)
-        return verdict != LIVE
+        """Нужно ли задание по политике и данным проверки объёма"""
+        return self.policy.challenge_required(session)
 
     def __call__(self, session):
         if self.source is None:
@@ -135,12 +101,6 @@ class ChallengeCheck:
         if self._prior_failure(session):
             # Задание не может компенсировать уже обнаруженный провал
             return CheckResult(CheckStatus.FAIL, 'prior_check_failed')
-        verdict = self._verdict_for(session)
-        if verdict == LIVE:
-            return CheckResult(CheckStatus.SKIPPED, 'not_required')
-        if verdict == SPOOF:
-            # Задание не должно «исправлять» обнаруженный спуфинг
-            return CheckResult(CheckStatus.FAIL, 'liveness_spoof')
         if self.display is None or isinstance(self.display, NullDisplay):
             return CheckResult(CheckStatus.NOT_AVAILABLE, 'display_unavailable')
         # Непрерывность личности обеспечивает трек источника наблюдений;
@@ -153,27 +113,6 @@ class ChallengeCheck:
             result.status == CheckStatus.FAIL
             for name, result in session.checks.items() if name != 'challenge'
         )
-
-    def _verdict_for(self, session):
-        """Вердикт объёма, уже полученный политикой для этой сессии"""
-        if self._verdict is None or self._verdict[0] != session.session_id:
-            return None
-        return self._verdict[1]
-
-    def _liveness_verdict(self, session):
-        """Диагностическая оценка объёма лица для выбора политики"""
-        if self.liveness is None or self.source is None:
-            return None
-        try:
-            observation = self.source.next(session.deadline)
-            if observation is None or observation.pair is None:
-                raise ValueError('Нет пары кадров для оценки объёма')
-            result = self.liveness.measure(observation.pair)
-        except Exception as error:
-            log_warning(f'Задания: оценка объёма недоступна: {error}')
-            return None
-        session.diagnostics['stereo'] = result
-        return result.get('decision')
 
     def _run(self, session, flow):
         last_stage = None

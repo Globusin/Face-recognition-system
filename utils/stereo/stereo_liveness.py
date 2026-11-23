@@ -1,7 +1,9 @@
-"""Проверка объёма лица по двум камерам: классификатор и диагностический замер
+"""Проверка объёма лица по двум камерам
 
-Пороги классификатора не подтверждены на размеченной выборке, поэтому результат
-помечается diagnostic_only и не участвует в разрешении доступа
+Пороги классификатора не подтверждены на размеченной выборке. В режиме
+advisory результат только сохраняется для диагностики; в режиме required
+политика допуска использует LIVE/SPOOF/UNKNOWN, а недостаток данных
+запрещает доступ
 """
 
 import math
@@ -9,7 +11,8 @@ import threading
 import time
 from pathlib import Path
 
-from utils.common.logger import log_error, log_info
+from utils.access.authentication import CheckResult, CheckStatus
+from utils.common.logger import log_error, log_info, log_warning
 from utils.stereo.stereo_calibration import camera_signature, load_calibration
 from utils.stereo.two_view_pad import inspect_pair
 
@@ -57,7 +60,13 @@ def _count(value, name, minimum):
 def liveness_settings(config):
     """Проверяет и дополняет настройки диагностической проверки"""
     section = config.get('stereo_liveness', {}) or {}
-    enabled = bool(section.get('enabled', False))
+    mode = str(section.get('mode', 'off')).strip().lower()
+    if mode not in ('off', 'advisory', 'required'):
+        raise ValueError(f'Неизвестный режим стереопроверки: {mode}')
+    parallel = section.get('parallel') is True
+    result_timeout = _number(
+        section.get('result_timeout_s', 1.5), 'result_timeout_s',
+    )
     dense_depth = bool(section.get('dense_depth', False))
     mounting_confirmed = section.get('mounting_confirmed') is True
 
@@ -99,7 +108,9 @@ def liveness_settings(config):
         raise ValueError('max_nose_eye_mm не может быть меньше live_nose_eye_mm')
 
     return dict(
-        enabled=enabled,
+        mode=mode,
+        parallel=parallel,
+        result_timeout=result_timeout,
         calibration_id=calibration_id,
         mounting_confirmed=mounting_confirmed,
         dense_depth=dense_depth,
@@ -272,15 +283,11 @@ class StereoLivenessDiagnostics:
         return self._loaded
 
 
-class StereoDiagnosticsCollector:
-    """Обработка пары, снятой во время сопровождения того же лица
+class StereoWorker:
+    """Один рабочий поток: замер объёма идёт во время распознавания
 
-    Пара берётся из последнего наблюдения трека, по которому принималось решение,
-    поэтому измеряется именно предъявление, прошедшее распознавание, а не кадр
-    после открытия замка, куда мог попасть уже другой человек. Пара снята до
-    допуска, а вычисление геометрии выполняется в отдельном потоке: основной цикл
-    закрывает замок в engine.tick() и не должен ждать измерения. Одновременно
-    выполняется не больше одной задачи, очередь не растёт
+    Очередь не растёт: пока замер выполняется, новое задание пропускается.
+    Результат привязан к session_id и не переиспользуется другой сессией
     """
 
     def __init__(self, diagnostics, clock=time.monotonic):
@@ -288,55 +295,112 @@ class StereoDiagnosticsCollector:
         self.clock = clock
         self._lock = threading.Lock()
         self._thread = None
+        self._latest = None
         self._closed = False
         self.skipped = 0
         self.completed = 0
 
-    def submit(self, session, observation):
-        """Запускает замер, не дожидаясь вычислений"""
+    def submit(self, session_id, pair):
+        """Запускает замер пары, не дожидаясь результата"""
         with self._lock:
             if self._closed:
                 return False
             if self._thread is not None and self._thread.is_alive():
-                # Пропуск лучше очереди: диагностика не должна отставать от попыток
                 self.skipped += 1
                 return False
             self._thread = threading.Thread(
-                target=self._run, args=(session, observation),
-                name='stereo-diagnostics', daemon=True,
+                target=self._run, args=(session_id, pair),
+                name='stereo-worker', daemon=True,
             )
             self._thread.start()
             return True
 
+    def take(self, session_id, timeout):
+        """Возвращает результат только для этой сессии или None по таймауту"""
+        deadline = self.clock() + timeout
+        while True:
+            with self._lock:
+                if self._latest is not None and self._latest[0] == session_id:
+                    return self._latest[1]
+            if self.clock() >= deadline:
+                return None
+            time.sleep(0.01)
+
     def close(self, timeout=1.0):
-        """Останавливает приём задач и ждёт текущую не дольше таймаута"""
         with self._lock:
             self._closed = True
             thread = self._thread
         if thread is not None:
             thread.join(timeout)
 
-    def _run(self, session, observation):
-        started = self.clock()
+    def _run(self, session_id, pair):
         try:
-            if observation is None or observation.pair is None:
-                raise ValueError('Нет пары кадров: нужны две камеры')
-            if (observation.track_id is None
-                    or observation.track_id != session.tracked_face_id):
-                raise ValueError('Трек лица изменился после распознавания')
-            result = self.diagnostics.measure(observation.pair)
+            result = self.diagnostics.measure(pair)
         except Exception as error:
-            log_error(f"Стерео-диагностика недоступна: {error}")
+            log_warning(f'Стерео-замер недоступен: {error}')
             result = dict(
                 decision=UNKNOWN, status='not_measured', reason=str(error),
                 diagnostic_only=True, access_granted=False, timing_verified=False,
             )
-        result['worker_elapsed_seconds'] = self.clock() - started
-        session.diagnostics['stereo'] = result
         with self._lock:
+            self._latest = (session_id, result)
             self.completed += 1
-        log_info(
-            f"Стерео-диагностика: решение={result['decision']}, "
-            f"причина={result.get('reason') or '-'}, "
-            f"время {result['worker_elapsed_seconds']:.2f} с"
+
+
+class StereoCheck:
+    """Проверка объёма лица как проверка сессии
+
+    В режиме required проверка обязательна: PASS только при LIVE, при
+    SPOOF или отсутствии данных доступ запрещается. В advisory результат
+    только сохраняется в diagnostics и не влияет на допуск
+    """
+
+    def __init__(self, diagnostics, mode, worker=None, timeout=1.5):
+        if mode not in ('advisory', 'required'):
+            raise ValueError('Стереопроверка должна быть advisory или required')
+        self.diagnostics = diagnostics
+        self.mode = mode
+        self.worker = worker
+        self.timeout = timeout
+        self.source = None
+
+    def bind(self, source):
+        if self.source is not None:
+            raise RuntimeError('Источник наблюдений уже привязан')
+        self.source = source
+
+    def release(self):
+        self.source = None
+
+    def __call__(self, session):
+        result = self._measure(session)
+        if result is None:
+            status = (CheckStatus.NOT_AVAILABLE if self.mode == 'required'
+                      else CheckStatus.SKIPPED)
+            return CheckResult(status, 'stereo_not_ready')
+        session.diagnostics['stereo'] = result
+        if self.mode != 'required':
+            return CheckResult(CheckStatus.SKIPPED, 'advisory')
+        decision = result.get('decision')
+        if decision == LIVE:
+            return CheckResult(CheckStatus.PASS, 'stereo_live')
+        if decision == SPOOF:
+            return CheckResult(CheckStatus.FAIL, 'liveness_spoof')
+        return CheckResult(
+            CheckStatus.NOT_AVAILABLE,
+            result.get('reason') or 'stereo_inconclusive',
         )
+
+    def _measure(self, session):
+        if self.worker is not None:
+            return self.worker.take(session.session_id, self.timeout)
+        if self.source is None:
+            return None
+        try:
+            observation = self.source.next(session.deadline)
+            if observation is None or observation.pair is None:
+                return None
+            return self.diagnostics.measure(observation.pair)
+        except Exception as error:
+            log_warning(f'Стерео-проверка недоступна: {error}')
+            return None

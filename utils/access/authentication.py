@@ -74,6 +74,7 @@ class AuthenticationEngine:
                  door_open_seconds=5.0, clock=time.monotonic,
                  stereo_check: Optional[SessionCheck] = None,
                  challenge_check: Optional[SessionCheck] = None,
+                 policy=None,
                  on_state: Optional[Callable] = None):
         for value in (session_timeout, cooldown_seconds, door_open_seconds):
             if not math.isfinite(value) or value <= 0:
@@ -87,6 +88,7 @@ class AuthenticationEngine:
         self.clock = clock
         self.stereo_check = stereo_check
         self.challenge_check = challenge_check
+        self.policy = policy
         self.on_state = on_state
         self.state = AuthenticationState.IDLE
         self.session = None
@@ -209,6 +211,13 @@ class AuthenticationEngine:
             with self._lock, self.maintenance.lock:
                 if not self._active(session_id):
                     return
+                # Итоговая политика проверяет наличие обязательных проверок
+                # и запрещает допуск, если чего-то не хватает
+                if self.policy is not None:
+                    decision = self.policy.evaluate(self.session)
+                    if decision.status != 'GRANTED':
+                        self.cancel(decision.reason)
+                        return
                 self.session.unlock_attempted = True
                 # Даже неудачный unlock может частично сработать на оборудовании
                 self._door_deadline = self.clock() + self.door_open_seconds

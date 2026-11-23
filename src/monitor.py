@@ -9,6 +9,7 @@ sys.path.append(str(Path(__file__).parent.parent))
 from utils.access.authentication import AuthenticationEngine, AuthenticationState
 from utils.face.recognition import recognize_face_from_camera
 from utils.capture.camera_manager import get_camera_manager, stop_camera_manager
+from utils.access.decision import AccessPolicy
 from utils.challenge.challenge_check import (
     UnavailableChallengeCheck, build_challenge_check,
 )
@@ -19,7 +20,7 @@ from utils.common.config_loader import load_config
 from utils.common.logger import log_info, log_error, log_warning
 from utils.common.maintenance import maintenance
 from utils.stereo.stereo_liveness import (
-    StereoDiagnosticsCollector, StereoLivenessDiagnostics, liveness_settings,
+    StereoCheck, StereoLivenessDiagnostics, StereoWorker, liveness_settings,
 )
 from utils.stereo.two_view_pad import measurement_limits
 
@@ -37,19 +38,6 @@ def safe_display_state(display, state: DisplayState, detail: str = None) -> None
 def wait_or_stop(stop_event, seconds):
     """Ждёт указанное время и позволяет быстро остановить монитор"""
     return stop_event.wait(seconds)
-
-
-def should_collect_stereo(state, session):
-    """Замер нужен для любого оценённого кадра, включая отказ
-
-    Отказ — это и есть отрицательный пример для калибровки PAD; выборка только
-    из допусков смещена и не покажет, как проверка ведёт себя на атаках.
-    Прерванные попытки без результата распознавания пропускаются: оценивать
-    геометрию по кадру, где лицо уже потеряно, бессмысленно.
-    """
-    return (session is not None
-            and state in (AuthenticationState.GRANTED, AuthenticationState.DENIED)
-            and 'recognition' in session.checks)
 
 
 def run_monitoring(stop_event=None):
@@ -90,11 +78,20 @@ def run_monitoring(stop_event=None):
         reason = session.reason if session else ''
         log_info(f"Аутентификация: {state.value}, причина: {reason or '-'}")
 
+    try:
+        policy = AccessPolicy.from_config(config)
+    except ValueError as error:
+        # Ошибка конфигурации политики запрещает допуск, а не отключает проверки
+        log_error(f'Политика допуска недоступна: {error}')
+        policy = AccessPolicy(config_error='policy_config_error')
+
     liveness = None
     stereo_diagnostics = None
+    stereo_worker = None
+    stereo_check = None
     try:
         liveness = liveness_settings(config)
-        if liveness['enabled']:
+        if liveness['mode'] != 'off':
             stereo_diagnostics = StereoLivenessDiagnostics(
                 get_camera_manager(), liveness,
                 config.get('stereo_calibration', {}).get(
@@ -102,23 +99,26 @@ def run_monitoring(stop_event=None):
                 ),
                 measurement_limits(config.get('stereo_pad', {})),
             )
+            worker = None
+            if liveness['parallel']:
+                # Замер идёт одновременно с распознаванием
+                worker = StereoWorker(stereo_diagnostics)
+            stereo_worker = worker
+            stereo_check = StereoCheck(
+                stereo_diagnostics, liveness['mode'],
+                worker=worker, timeout=liveness['result_timeout'],
+            )
     except ValueError as error:
         # Диагностика не должна мешать работе монитора
-        log_error(f"Стерео-диагностика отключена: {error}")
+        log_error(f"Стерео-проверка отключена: {error}")
 
     challenge_check = None
     try:
-        challenge_check = build_challenge_check(
-            config, display, stereo_diagnostics,
-        )
+        challenge_check = build_challenge_check(config, display, policy)
     except Exception as error:
         # Ошибка конфигурации не отключает обязательную проверку: запрещаем допуск
         log_error(f'Задания недоступны из-за ошибки конфигурации: {error}')
         challenge_check = UnavailableChallengeCheck('challenge_config_error')
-
-    stereo_collector = None
-    if stereo_diagnostics is not None:
-        stereo_collector = StereoDiagnosticsCollector(stereo_diagnostics)
 
     settings = config.get('authentication', {})
     engine = AuthenticationEngine(
@@ -126,7 +126,9 @@ def run_monitoring(stop_event=None):
         session_timeout=settings.get('session_timeout_seconds', 20.0),
         cooldown_seconds=detection_interval,
         door_open_seconds=door_open_time,
+        stereo_check=stereo_check,
         challenge_check=challenge_check,
+        policy=policy,
         on_state=show_authentication_state,
     )
 
@@ -162,10 +164,16 @@ def run_monitoring(stop_event=None):
                     session_id = engine.begin(observation.track_id)
                     if session_id is not None:
                         def recognize_current_track():
+                            on_pair = None
+                            if stereo_worker is not None:
+                                # Первая пара трека уходит в стереозубр,
+                                # пока распознавание продолжает сбор кадров
+                                on_pair = lambda pair: stereo_worker.submit(session_id, pair)
                             try:
                                 return recognize_face_from_camera(
                                     observation_source=source,
                                     deadline=engine.session.deadline,
+                                    on_pair=on_pair,
                                 )
                             except ObservationRejected as error:
                                 engine.cancel(str(error))
@@ -173,20 +181,15 @@ def run_monitoring(stop_event=None):
 
                         if challenge_check is not None:
                             challenge_check.bind(source)
+                        if stereo_check is not None:
+                            stereo_check.bind(source)
                         try:
                             engine.evaluate(session_id, recognize_current_track)
                         finally:
                             if challenge_check is not None:
                                 challenge_check.release()
-                        # Пара снята во время сопровождения этого лица, до
-                        # допуска; вычисление уходит в поток, чтобы tick()
-                        # не ждал геометрию и не продлевал открытие замка
-                        session_after = engine.session
-                        if (stereo_collector is not None and session_after is not None
-                                and should_collect_stereo(engine.state, session_after)
-                                and 'stereo' not in session_after.diagnostics):
-                            # Замер уже выполнен политикой заданий — второй не нужен
-                            stereo_collector.submit(session_after, source.current)
+                            if stereo_check is not None:
+                                stereo_check.release()
             except ObservationRejected:
                 continue
             except Exception as error:
@@ -206,8 +209,8 @@ def run_monitoring(stop_event=None):
             safe_display_state(display, DisplayState.ERROR, "Ошибка закрытия\nзамка")
         else:
             safe_display_state(display, DisplayState.STANDBY, "Мониторинг\nостановлен")
-        if stereo_collector is not None:
-            stereo_collector.close()
+        if stereo_worker is not None:
+            stereo_worker.close()
         log_info("Мониторинг остановлен")
 
 
