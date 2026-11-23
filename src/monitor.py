@@ -9,7 +9,9 @@ sys.path.append(str(Path(__file__).parent.parent))
 from utils.access.authentication import AuthenticationEngine, AuthenticationState
 from utils.face.recognition import recognize_face_from_camera
 from utils.capture.camera_manager import get_camera_manager, stop_camera_manager
-from utils.challenge.challenge_check import build_challenge_check
+from utils.challenge.challenge_check import (
+    UnavailableChallengeCheck, build_challenge_check,
+)
 from utils.face.face_observations import FaceObservationSource, ObservationRejected
 from utils.access.lock_controller import initialize_lock_controller
 from utils.device.display import initialize_display, DisplayState
@@ -88,12 +90,35 @@ def run_monitoring(stop_event=None):
         reason = session.reason if session else ''
         log_info(f"Аутентификация: {state.value}, причина: {reason or '-'}")
 
+    liveness = None
+    stereo_diagnostics = None
+    try:
+        liveness = liveness_settings(config)
+        if liveness['enabled']:
+            stereo_diagnostics = StereoLivenessDiagnostics(
+                get_camera_manager(), liveness,
+                config.get('stereo_calibration', {}).get(
+                    'output_dir', 'data/calibration',
+                ),
+                measurement_limits(config.get('stereo_pad', {})),
+            )
+    except ValueError as error:
+        # Диагностика не должна мешать работе монитора
+        log_error(f"Стерео-диагностика отключена: {error}")
+
     challenge_check = None
     try:
-        challenge_check = build_challenge_check(config, display)
-    except ValueError as error:
-        # Ошибка настройки политики не должна останавливать мониторинг
-        log_error(f'Задания отключены: {error}')
+        challenge_check = build_challenge_check(
+            config, display, stereo_diagnostics,
+        )
+    except Exception as error:
+        # Ошибка конфигурации не отключает обязательную проверку: запрещаем допуск
+        log_error(f'Задания недоступны из-за ошибки конфигурации: {error}')
+        challenge_check = UnavailableChallengeCheck('challenge_config_error')
+
+    stereo_collector = None
+    if stereo_diagnostics is not None:
+        stereo_collector = StereoDiagnosticsCollector(stereo_diagnostics)
 
     settings = config.get('authentication', {})
     engine = AuthenticationEngine(
@@ -104,23 +129,6 @@ def run_monitoring(stop_event=None):
         challenge_check=challenge_check,
         on_state=show_authentication_state,
     )
-
-    stereo_collector = None
-    try:
-        liveness = liveness_settings(config)
-        if liveness['enabled']:
-            stereo_collector = StereoDiagnosticsCollector(
-                StereoLivenessDiagnostics(
-                    get_camera_manager(), liveness,
-                    config.get('stereo_calibration', {}).get(
-                        'output_dir', 'data/calibration',
-                    ),
-                    measurement_limits(config.get('stereo_pad', {})),
-                ),
-            )
-    except ValueError as error:
-        # Диагностика не должна мешать работе монитора
-        log_error(f"Стерео-диагностика отключена: {error}")
 
     safe_display_state(display, DisplayState.STANDBY, "Готов к работе")
 
@@ -173,11 +181,12 @@ def run_monitoring(stop_event=None):
                         # Пара снята во время сопровождения этого лица, до
                         # допуска; вычисление уходит в поток, чтобы tick()
                         # не ждал геометрию и не продлевал открытие замка
-                        if (stereo_collector is not None
-                                and should_collect_stereo(
-                                    engine.state, engine.session,
-                                )):
-                            stereo_collector.submit(engine.session, source.current)
+                        session_after = engine.session
+                        if (stereo_collector is not None and session_after is not None
+                                and should_collect_stereo(engine.state, session_after)
+                                and 'stereo' not in session_after.diagnostics):
+                            # Замер уже выполнен политикой заданий — второй не нужен
+                            stereo_collector.submit(session_after, source.current)
             except ObservationRejected:
                 continue
             except Exception as error:

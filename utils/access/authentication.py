@@ -179,14 +179,21 @@ class AuthenticationEngine:
                 with self._lock:
                     if not self._active(session_id):
                         return
-                    should_run = getattr(check, 'should_run', None)
-                    # Отключённая политикой проверка не считается ни успешной,
-                    # ни проваленной и не переводит сессию в CHALLENGE
-                    if callable(should_run) and should_run(self.session) is False:
+                should_run = getattr(check, 'should_run', None)
+                # Политика может оценивать данные вне блокировки автомата:
+                # например, измерить объём лица, чтобы решить, нужно ли задание.
+                # После оценки отмена проверяется повторно
+                if callable(should_run) and should_run(self.session) is False:
+                    with self._lock:
+                        if not self._active(session_id):
+                            return
                         self.session.checks[name] = CheckResult(
                             CheckStatus.SKIPPED, 'not_required',
                         )
-                        continue
+                    continue
+                with self._lock:
+                    if not self._active(session_id):
+                        return
                     if name == 'challenge':
                         self._transition(AuthenticationState.CHALLENGE)
                 result = check(self.session)

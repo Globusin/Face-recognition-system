@@ -118,6 +118,24 @@ class AuthenticationEngineTests(unittest.TestCase):
         )
         self.assertNotIn(State.CHALLENGE, self.states)
 
+    def test_policy_cancel_during_should_run_prevents_unlock(self):
+        class CancellingCheck:
+            def __init__(self, engine):
+                self.engine = engine
+
+            def should_run(self, session):
+                self.engine.cancel('cancelled_in_policy')
+                return False
+
+            def __call__(self, session):
+                raise AssertionError('проверка не должна вызываться')
+
+        self.engine.challenge_check = CancellingCheck(self.engine)
+        self.evaluate()
+        self.assertEqual(self.engine.state, State.DENIED)
+        self.assertEqual(self.engine.session.reason, 'cancelled_in_policy')
+        self.lock.unlock.assert_not_called()
+
     def test_error_and_failed_unlock_are_safe(self):
         self.evaluate_error = Mock(side_effect=RuntimeError('camera'))
         self.engine.evaluate(self.engine.begin(), self.evaluate_error)

@@ -13,10 +13,11 @@ from utils.challenge.challenge_response import (
 )
 from utils.device.display import DisplayState, NullDisplay
 from utils.face.face_observations import ObservationRejected
-from utils.common.logger import log_warning
+from utils.face.recognition import get_embeddings_from_frame, match_embedding
+from utils.common.logger import log_error, log_warning
+from utils.stereo.stereo_liveness import LIVE, SPOOF
 
 POLICIES = ('disabled', 'adaptive', 'always')
-DEFAULT_ADAPTIVE_DISTANCE = 0.12
 DEFAULT_PIPELINE_COUNT = 1
 PROMPT_BASELINE = 'Смотрите\nпрямо\nГлаза открыты'
 PROMPT_RETURN = 'Вернитесь\nв исходное\nположение'
@@ -27,35 +28,56 @@ class ChallengeDisplayError(RuntimeError):
 
 
 def challenge_policy_settings(config):
-    """Политика заданий и порог риска для адаптивного режима"""
+    """Политика заданий для рабочего конвейера"""
     section = config.get('challenge_response', {}) or {}
     policy = str(section.get('policy', 'disabled')).strip().lower()
     if policy not in POLICIES:
         raise ValueError(f'Неизвестная политика заданий: {policy}')
 
-    distance = section.get('adaptive_max_distance', DEFAULT_ADAPTIVE_DISTANCE)
-    if isinstance(distance, bool) or not isinstance(distance, (int, float)):
-        raise ValueError('adaptive_max_distance должен быть числом')
-    distance = float(distance)
-    if not 0 < distance <= 1:
-        raise ValueError('adaptive_max_distance должен быть в диапазоне (0, 1]')
-
     count = section.get('pipeline_count', DEFAULT_PIPELINE_COUNT)
     if isinstance(count, bool) or not isinstance(count, int) or not 1 <= count <= 5:
         raise ValueError('pipeline_count должен быть целым числом от 1 до 5')
 
-    return dict(policy=policy, adaptive_max_distance=distance, count=count)
+    return dict(policy=policy, count=count)
 
 
-def build_challenge_check(config, display):
-    """Создаёт адаптер заданий или None, если политика отключена"""
-    policy = challenge_policy_settings(config)
-    if policy['policy'] == 'disabled':
+class UnavailableChallengeCheck:
+    """Обязательная проверка при ошибке конфигурации
+
+    Не отключает задание молча: каждый допуск запрещается, пока конфигурация
+    не исправлена
+    """
+
+    def __init__(self, reason):
+        self.reason = reason
+
+    def should_run(self, session):
+        return True
+
+    def __call__(self, session):
+        return CheckResult(CheckStatus.NOT_AVAILABLE, self.reason)
+
+
+def build_challenge_check(config, display, liveness=None):
+    """Создаёт адаптер заданий или None, если политика явно отключена
+
+    Ошибка конфигурации при непустой политике не считается отключением:
+    возвращается недоступная проверка, чтобы доступ оставался запрещён
+    """
+    section = config.get('challenge_response', {}) or {}
+    raw_policy = str(section.get('policy', 'disabled')).strip().lower()
+    if raw_policy == 'disabled':
         return None
-    settings = challenge_settings(config.get('challenge_response', {}))
-    # Заданий в рабочем конвейере меньше, чтобы уложиться в тайм-аут сессии
+
+    try:
+        policy = challenge_policy_settings(config)
+        settings = challenge_settings(section)
+    except ValueError as error:
+        log_error(f'Задания: ошибка конфигурации, проверка недоступна: {error}')
+        return UnavailableChallengeCheck(f'challenge_config_error: {error}')
+
     settings['count'] = policy['count']
-    return ChallengeCheck(settings, policy, display)
+    return ChallengeCheck(settings, policy, display, liveness)
 
 
 class ChallengeCheck:
@@ -63,18 +85,21 @@ class ChallengeCheck:
 
     Кадры берутся из источника наблюдений распознавания: они принадлежат треку,
     по которому принято решение, поэтому кадры до команды не засчитываются,
-    а потеря лица отменяет попытку. Повторно результат той же сессии не
-    используется
+    а потеря лица отменяет попытку. После выполнения задания один новый
+    эмбеддинг подтверждает, что перед камерой тот же пользователь. Повторно
+    результат той же сессии не используется
     """
 
-    def __init__(self, settings, policy, display, clock=time.monotonic):
+    def __init__(self, settings, policy, display, liveness=None,
+                 clock=time.monotonic):
         self.settings = settings
         self.policy = policy['policy']
-        self.adaptive_max_distance = policy['adaptive_max_distance']
         self.display = display
+        self.liveness = liveness
         self.clock = clock
         self.source = None
         self._used_sessions = set()
+        self._verdict = None
 
     def bind(self, source):
         """Привязывает источник наблюдений текущей попытки"""
@@ -86,14 +111,20 @@ class ChallengeCheck:
         self.source = None
 
     def should_run(self, session):
-        """Нужна ли проверка по политике для этой сессии"""
+        """Нужна ли проверка по политике для этой сессии
+
+        В адаптивном режиме дополнительное подтверждение нужно, если проверка
+        объёма лица не дала LIVE. Отсутствие стереоданных — тоже повод
+        запросить задание, а не пропустить проверку. Обнаруженный SPOOF
+        заданием не исправляется: проверка сразу откажет
+        """
         if self.policy == 'disabled':
             return False
         if self.policy == 'always':
             return True
-        # Порог дистанции — временный признак риска, а не калиброванная величина
-        return (session.distance is not None
-                and session.distance >= self.adaptive_max_distance)
+        verdict = self._liveness_verdict(session)
+        self._verdict = (session.session_id, verdict)
+        return verdict != LIVE
 
     def __call__(self, session):
         if self.source is None:
@@ -104,6 +135,12 @@ class ChallengeCheck:
         if self._prior_failure(session):
             # Задание не может компенсировать уже обнаруженный провал
             return CheckResult(CheckStatus.FAIL, 'prior_check_failed')
+        verdict = self._verdict_for(session)
+        if verdict == LIVE:
+            return CheckResult(CheckStatus.SKIPPED, 'not_required')
+        if verdict == SPOOF:
+            # Задание не должно «исправлять» обнаруженный спуфинг
+            return CheckResult(CheckStatus.FAIL, 'liveness_spoof')
         if self.display is None or isinstance(self.display, NullDisplay):
             return CheckResult(CheckStatus.NOT_AVAILABLE, 'display_unavailable')
         # Непрерывность личности обеспечивает трек источника наблюдений;
@@ -117,8 +154,30 @@ class ChallengeCheck:
             for name, result in session.checks.items() if name != 'challenge'
         )
 
+    def _verdict_for(self, session):
+        """Вердикт объёма, уже полученный политикой для этой сессии"""
+        if self._verdict is None or self._verdict[0] != session.session_id:
+            return None
+        return self._verdict[1]
+
+    def _liveness_verdict(self, session):
+        """Диагностическая оценка объёма лица для выбора политики"""
+        if self.liveness is None or self.source is None:
+            return None
+        try:
+            observation = self.source.next(session.deadline)
+            if observation is None or observation.pair is None:
+                raise ValueError('Нет пары кадров для оценки объёма')
+            result = self.liveness.measure(observation.pair)
+        except Exception as error:
+            log_warning(f'Задания: оценка объёма недоступна: {error}')
+            return None
+        session.diagnostics['stereo'] = result
+        return result.get('decision')
+
     def _run(self, session, flow):
         last_stage = None
+        last_observation = None
         try:
             while not flow.finished:
                 now = self.clock()
@@ -154,6 +213,7 @@ class ChallengeCheck:
                     last_stage = flow.stage
 
                 flow.feed(face, self.clock())
+                last_observation = observation
                 if flow.stage == 'prompt':
                     if flow.tasks:
                         flow.tasks[-1]['prompt_started_s'] = flow.task_time(self.clock())
@@ -167,9 +227,37 @@ class ChallengeCheck:
             flow.fail('processing_error', self.clock())
             log_warning(f'Задания: ошибка выполнения: {type(error).__name__}: {error}')
 
-        if flow.stage == 'passed':
-            return CheckResult(CheckStatus.PASS, 'challenge_passed')
-        return CheckResult(CheckStatus.FAIL, flow.reason or 'challenge_failed')
+        if flow.stage != 'passed':
+            return CheckResult(CheckStatus.FAIL, flow.reason or 'challenge_failed')
+        if last_observation is None:
+            return CheckResult(CheckStatus.FAIL, 'identity_not_measured')
+        failure = self._identity_failure(last_observation, session)
+        if failure is not None:
+            return CheckResult(CheckStatus.FAIL, failure)
+        return CheckResult(CheckStatus.PASS, 'challenge_passed')
+
+    def _identity_failure(self, observation, session):
+        """Один эмбеддинг после задания должен принадлежать тому же пользователю"""
+        try:
+            embeddings = get_embeddings_from_frame(
+                observation.primary.image, observation.face_box,
+            )
+            if not embeddings:
+                return 'identity_not_measured'
+            user_id, distance = match_embedding(embeddings[0])
+        except Exception as error:
+            log_warning(f'Задания: не удалось подтвердить личность: {error}')
+            return 'identity_not_measured'
+
+        session.diagnostics['challenge_identity'] = dict(
+            user_id=user_id, distance=distance,
+        )
+        if user_id is None:
+            return 'identity_not_measured'
+        if user_id != session.user_id:
+            # Подмена человека между распознаванием и заданием
+            return 'identity_changed'
+        return None
 
     def _show_stage(self, flow):
         if flow.stage == 'baseline':

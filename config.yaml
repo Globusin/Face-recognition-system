@@ -100,7 +100,8 @@ similarity: 0.15  # Порог схожести (чем меньше, тем с�
 challenge_response:
   # Эксперимент, не включён в разрешение доступа
   policy: disabled           # disabled | adaptive | always
-  adaptive_max_distance: 0.12  # Временный признак риска для adaptive, не калибровка
+  # adaptive: LIVE — без задания; UNKNOWN или нет стереоданных — задание;
+  # SPOOF — отказ (пороги предварительные, возможны ложные отказы)
   pipeline_count: 1          # Заданий в рабочем конвейере, чтобы уложиться в тайм-аут
   count: 3
   baseline_seconds: 0.6

@@ -8,13 +8,15 @@ import numpy as np
 
 from utils.access.authentication import AuthenticationSession, CheckResult, CheckStatus
 from utils.challenge.challenge_check import (
-    ChallengeCheck, build_challenge_check, challenge_policy_settings,
+    ChallengeCheck, UnavailableChallengeCheck, build_challenge_check,
+    challenge_policy_settings,
 )
 from utils.challenge.challenge_response import (
     COMMANDS, FaceObservation, challenge_settings, observe_face,
 )
 from utils.device.display import NullDisplay
 from utils.face.face_observations import ObservationRejected
+from utils.stereo.stereo_liveness import LIVE, SPOOF, UNKNOWN
 
 
 class FakeClock:
@@ -54,6 +56,7 @@ class FakeSource:
             ),
             face_box=(10, 10, 40, 40),
             track_id=self.track_id,
+            pair=Mock(),
         )
 
 
@@ -67,27 +70,34 @@ def flow_settings(count=1):
     return settings
 
 
-def make_session(distance=0.10, session_id='session-1', deadline=100.0):
+def make_session(distance=0.10, session_id='session-1', deadline=100.0, user_id=7):
     return AuthenticationSession(
         session_id, 0.0, 0.0, deadline,
-        distance=distance, tracked_face_id='track-1',
+        distance=distance, tracked_face_id='track-1', user_id=user_id,
     )
 
 
-def make_check(policy='always', display=None, clock=None, adaptive_distance=0.12):
+def make_check(policy='always', display=None, clock=None, liveness=None):
     return ChallengeCheck(
-        flow_settings(), {'policy': policy, 'adaptive_max_distance': adaptive_distance},
+        flow_settings(), {'policy': policy, 'count': 1},
         display if display is not None else Mock(),
+        liveness,
         clock=clock if clock is not None else FakeClock(),
     )
 
 
 class ChallengeExecutionTests(unittest.TestCase):
     def setUp(self):
-        # Реальные кадры и dlib в этих проверках не нужны
-        patcher = patch('utils.challenge.challenge_check.observe_face', side_effect=fake_observe)
-        patcher.start()
-        self.addCleanup(patcher.stop)
+        # Реальные кадры, dlib и база в этих проверках не нужны
+        patchers = (
+            patch('utils.challenge.challenge_check.observe_face', side_effect=fake_observe),
+            patch('utils.challenge.challenge_check.get_embeddings_from_frame',
+                  return_value=[np.zeros(128)]),
+            patch('utils.challenge.challenge_check.match_embedding', return_value=(7, 0.1)),
+        )
+        for patcher in patchers:
+            patcher.start()
+            self.addCleanup(patcher.stop)
 
     def run_to_result(self, command, sign):
         clock = FakeClock()
@@ -119,6 +129,32 @@ class ChallengeExecutionTests(unittest.TestCase):
         shown = [call.args[1] for call in check.display.show_state.call_args_list]
         for command in COMMANDS.values():
             self.assertNotIn(command, shown)
+
+    def test_challenge_fails_when_identity_changed(self):
+        clock = FakeClock()
+        source = FakeSource(clock, [0.0] * 8 + [0.4] * 4 + [0.0] * 2)
+        check = make_check(clock=clock)
+        check.bind(source)
+        with patch('utils.challenge.challenge_response.secrets.choice',
+                   return_value='TURN_LEFT'), \
+                patch('utils.challenge.challenge_check.match_embedding',
+                      return_value=(8, 0.1)):
+            result = check(make_session())
+        self.assertEqual(result.status, CheckStatus.FAIL)
+        self.assertEqual(result.reason, 'identity_changed')
+
+    def test_missing_final_embedding_fails_closed(self):
+        clock = FakeClock()
+        source = FakeSource(clock, [0.0] * 8 + [0.4] * 4 + [0.0] * 2)
+        check = make_check(clock=clock)
+        check.bind(source)
+        with patch('utils.challenge.challenge_response.secrets.choice',
+                   return_value='TURN_LEFT'), \
+                patch('utils.challenge.challenge_check.get_embeddings_from_frame',
+                      return_value=None):
+            result = check(make_session())
+        self.assertEqual(result.status, CheckStatus.FAIL)
+        self.assertEqual(result.reason, 'identity_not_measured')
 
     def test_face_loss_cancels_attempt(self):
         clock = FakeClock()
@@ -201,11 +237,53 @@ class ChallengePolicyTests(unittest.TestCase):
         self.assertFalse(make_check('disabled').should_run(make_session()))
         self.assertTrue(make_check('always').should_run(make_session()))
 
-    def test_adaptive_uses_distance_threshold(self):
-        check = make_check('adaptive', adaptive_distance=0.12)
-        self.assertFalse(check.should_run(make_session(distance=0.10)))
-        self.assertTrue(check.should_run(make_session(distance=0.13)))
-        self.assertFalse(check.should_run(make_session(distance=None)))
+    def test_adaptive_uses_stereo_liveness(self):
+        for verdict, expected in ((LIVE, False), (UNKNOWN, True), (SPOOF, True)):
+            with self.subTest(verdict=verdict):
+                clock = FakeClock()
+                liveness = Mock()
+                liveness.measure.return_value = {'decision': verdict}
+                check = make_check('adaptive', clock=clock, liveness=liveness)
+                check.bind(FakeSource(clock, [0.0] * 2))
+                session = make_session()
+                self.assertEqual(check.should_run(session), expected)
+                self.assertEqual(session.diagnostics['stereo']['decision'], verdict)
+
+    def test_spoof_denies_without_running_challenge(self):
+        clock = FakeClock()
+        liveness = Mock()
+        liveness.measure.return_value = {'decision': SPOOF}
+        check = make_check('adaptive', clock=clock, liveness=liveness)
+        check.bind(FakeSource(clock, [0.0] * 2))
+        session = make_session()
+        self.assertTrue(check.should_run(session))
+        result = check(session)
+        self.assertEqual(result.status, CheckStatus.FAIL)
+        self.assertEqual(result.reason, 'liveness_spoof')
+
+    def test_live_verdict_skips_without_second_measurement(self):
+        clock = FakeClock()
+        liveness = Mock()
+        liveness.measure.return_value = {'decision': LIVE}
+        check = make_check('adaptive', clock=clock, liveness=liveness)
+        check.bind(FakeSource(clock, [0.0] * 2))
+        session = make_session()
+        self.assertFalse(check.should_run(session))
+        self.assertEqual(check(session).status, CheckStatus.SKIPPED)
+        self.assertEqual(liveness.measure.call_count, 1)
+
+    def test_adaptive_without_stereo_requires_challenge(self):
+        check = make_check('adaptive')
+        check.bind(FakeSource(FakeClock(), [0.0] * 2))
+        self.assertTrue(check.should_run(make_session()))
+
+    def test_adaptive_measurement_failure_requires_challenge(self):
+        clock = FakeClock()
+        liveness = Mock()
+        liveness.measure.side_effect = ValueError('нет калибровки')
+        check = make_check('adaptive', clock=clock, liveness=liveness)
+        check.bind(FakeSource(clock, [0.0] * 2))
+        self.assertTrue(check.should_run(make_session()))
 
     def test_policy_settings_validation(self):
         self.assertEqual(challenge_policy_settings({})['policy'], 'disabled')
@@ -217,7 +295,6 @@ class ChallengePolicyTests(unittest.TestCase):
 
         invalid = (
             {'policy': 'auto'},
-            {'adaptive_max_distance': 0},
             {'pipeline_count': 0},
             {'pipeline_count': 2.5},
         )
@@ -228,11 +305,30 @@ class ChallengePolicyTests(unittest.TestCase):
 
     def test_build_returns_none_for_disabled_policy(self):
         self.assertIsNone(build_challenge_check({}, Mock()))
+        self.assertIsNone(build_challenge_check(
+            {'challenge_response': {'policy': 'disabled', 'count': 0}}, Mock(),
+        ))
         check = build_challenge_check(
             {'challenge_response': {'policy': 'always', 'pipeline_count': 1}}, Mock(),
         )
         self.assertIsInstance(check, ChallengeCheck)
         self.assertEqual(check.settings['count'], 1)
+
+    def test_config_error_does_not_disable_mandatory_check(self):
+        check = build_challenge_check(
+            {'challenge_response': {'policy': 'always', 'count': 0}}, Mock(),
+        )
+        self.assertIsInstance(check, UnavailableChallengeCheck)
+        self.assertTrue(check.should_run(make_session()))
+        result = check(make_session())
+        self.assertEqual(result.status, CheckStatus.NOT_AVAILABLE)
+
+    def test_unknown_policy_fails_closed(self):
+        check = build_challenge_check(
+            {'challenge_response': {'policy': 'alway'}}, Mock(),
+        )
+        self.assertIsInstance(check, UnavailableChallengeCheck)
+        self.assertEqual(check(make_session()).status, CheckStatus.NOT_AVAILABLE)
 
 
 class KnownFaceBoxTests(unittest.TestCase):
