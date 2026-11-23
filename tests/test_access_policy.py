@@ -54,7 +54,7 @@ class PolicyTests(unittest.TestCase):
         )
         adaptive = AccessPolicy(challenge_mode='adaptive')
         self.assertTrue(adaptive.challenge_required(make_session()))
-        for verdict, expected in ((LIVE, False), (UNKNOWN, True), (SPOOF, True)):
+        for verdict, expected in ((LIVE, False), (UNKNOWN, True), (SPOOF, False)):
             session = make_session()
             session.diagnostics['stereo'] = {'decision': verdict}
             with self.subTest(verdict=verdict):
@@ -65,6 +65,21 @@ class PolicyTests(unittest.TestCase):
         result = policy.evaluate(make_session(recognition=CheckStatus.PASS))
         self.assertEqual(result.status, DENIED)
         self.assertEqual(result.reason, 'policy_config_error')
+
+    def test_advisory_spoof_denies_without_challenge(self):
+        policy = AccessPolicy(stereo_mode='advisory', challenge_mode='adaptive')
+        session = make_session(recognition=CheckStatus.PASS)
+        session.diagnostics['stereo'] = {'decision': SPOOF}
+        self.assertFalse(policy.challenge_required(session))
+        result = policy.evaluate(session)
+        self.assertEqual(result.status, DENIED)
+        self.assertEqual(result.reason, 'liveness_spoof')
+
+    def test_advisory_unknown_does_not_gate(self):
+        policy = AccessPolicy(stereo_mode='advisory', challenge_mode='disabled')
+        session = make_session(recognition=CheckStatus.PASS)
+        session.diagnostics['stereo'] = {'decision': UNKNOWN}
+        self.assertEqual(policy.evaluate(session).status, GRANTED)
 
     def test_identity_is_required(self):
         policy = AccessPolicy()

@@ -310,7 +310,7 @@ def _recognize_fixed(observation_source, deadline, on_pair=None):
     for observation in observation_source.observations(
             frames_count, frame_delay, deadline):
         if on_pair is not None and not pair_sent and observation.pair is not None:
-            # Пара уходит в стереозубр параллельно с оставшимися кадрами
+            # Первая пара уходит в рабочий поток стереопроверки, не дожидаясь остальных кадров
             on_pair(observation.pair)
             pair_sent = True
         embeddings = get_embeddings_from_frame(
@@ -342,7 +342,7 @@ def _recognize_adaptive(observation_source, deadline, on_pair=None):
         for observation in observation_source.observations(
                 settings['max_frames'], settings['frame_interval'], deadline):
             if on_pair is not None and not pair_sent and observation.pair is not None:
-                # Пара уходит в стереозубр параллельно с оставшимися кадрами
+                # Первая пара уходит в рабочий поток стереопроверки, не дожидаясь остальных кадров
                 on_pair(observation.pair)
                 pair_sent = True
             embeddings = get_embeddings_from_frame(

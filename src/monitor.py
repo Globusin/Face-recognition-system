@@ -92,22 +92,28 @@ def run_monitoring(stop_event=None):
     try:
         liveness = liveness_settings(config)
         if liveness['mode'] != 'off':
-            stereo_diagnostics = StereoLivenessDiagnostics(
-                get_camera_manager(), liveness,
-                config.get('stereo_calibration', {}).get(
-                    'output_dir', 'data/calibration',
-                ),
-                measurement_limits(config.get('stereo_pad', {})),
-            )
-            worker = None
-            if liveness['parallel']:
-                # Замер идёт одновременно с распознаванием
-                worker = StereoWorker(stereo_diagnostics)
-            stereo_worker = worker
-            stereo_check = StereoCheck(
-                stereo_diagnostics, liveness['mode'],
-                worker=worker, timeout=liveness['result_timeout'],
-            )
+            if not liveness['calibration_id'] or not liveness['mounting_confirmed']:
+                log_warning(
+                    'Стереопроверка включена, но калибровка не указана или '
+                    'крепление не подтверждено; замер не выполняется'
+                )
+            else:
+                stereo_diagnostics = StereoLivenessDiagnostics(
+                    get_camera_manager(), liveness,
+                    config.get('stereo_calibration', {}).get(
+                        'output_dir', 'data/calibration',
+                    ),
+                    measurement_limits(config.get('stereo_pad', {})),
+                )
+                worker = None
+                if liveness['parallel']:
+                    # Замер идёт одновременно с распознаванием
+                    worker = StereoWorker(stereo_diagnostics)
+                stereo_worker = worker
+                stereo_check = StereoCheck(
+                    stereo_diagnostics, liveness['mode'],
+                    worker=worker, timeout=liveness['result_timeout'],
+                )
     except ValueError as error:
         # Диагностика не должна мешать работе монитора
         log_error(f"Стерео-проверка отключена: {error}")
@@ -166,8 +172,9 @@ def run_monitoring(stop_event=None):
                         def recognize_current_track():
                             on_pair = None
                             if stereo_worker is not None:
-                                # Первая пара трека уходит в стереозубр,
-                                # пока распознавание продолжает сбор кадров
+                                # Первая пара трека уходит в рабочий поток
+                                # стереопроверки, пока распознавание
+                                # продолжает сбор кадров
                                 on_pair = lambda pair: stereo_worker.submit(session_id, pair)
                             try:
                                 return recognize_face_from_camera(

@@ -7,7 +7,7 @@
 
 from dataclasses import dataclass
 
-from utils.stereo.stereo_liveness import LIVE
+from utils.stereo.stereo_liveness import LIVE, SPOOF
 
 GRANTED = 'GRANTED'
 DENIED = 'DENIED'
@@ -59,12 +59,15 @@ class AccessPolicy:
 
     def challenge_required(self, session):
         """Нужно ли задание по политике и данным проверки объёма"""
+        verdict = (session.diagnostics.get('stereo') or {}).get('decision')
+        # SPOOF — обнаруженная атака: задание не предлагается, доступ запрещён
+        if verdict == SPOOF:
+            return False
         if self.challenge_mode == 'disabled':
             return False
         if self.challenge_mode == 'always':
             return True
-        verdict = (session.diagnostics.get('stereo') or {}).get('decision')
-        # Без подтверждённого LIVE требуется дополнительное подтверждение
+        # Задание подкрепляет только слабые свидетельства живости
         return verdict != LIVE
 
     def evaluate(self, session):
@@ -75,6 +78,11 @@ class AccessPolicy:
         recognition = session.checks.get('recognition')
         if recognition is None or recognition.status != PASS:
             return Decision(DENIED, 'identity_not_confirmed')
+
+        verdict = (session.diagnostics.get('stereo') or {}).get('decision')
+        if verdict == SPOOF:
+            # Обнаруженная атака запрещает доступ даже в advisory
+            return Decision(DENIED, 'liveness_spoof')
 
         if self.stereo_required:
             stereo = session.checks.get('stereo')

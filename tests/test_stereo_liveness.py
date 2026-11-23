@@ -316,12 +316,21 @@ class StereoCheckTests(unittest.TestCase):
                 check.bind(self.source())
                 self.assertEqual(check(self.session).status, status)
 
-    def test_advisory_never_affects_access(self):
+    def test_advisory_spoof_fails(self):
         self.diagnostics.measure.return_value = {'decision': SPOOF, 'reason': 'x'}
         check = StereoCheck(self.diagnostics, 'advisory')
         check.bind(self.source())
-        self.assertEqual(check(self.session).status, CheckStatus.SKIPPED)
+        self.assertEqual(check(self.session).status, CheckStatus.FAIL)
         self.assertEqual(self.session.diagnostics['stereo']['decision'], SPOOF)
+
+    def test_advisory_live_and_unknown_are_skipped(self):
+        for decision in (LIVE, UNKNOWN):
+            with self.subTest(decision=decision):
+                diagnostics = Mock()
+                diagnostics.measure.return_value = {'decision': decision, 'reason': ''}
+                check = StereoCheck(diagnostics, 'advisory')
+                check.bind(self.source())
+                self.assertEqual(check(self.session).status, CheckStatus.SKIPPED)
 
     def test_missing_data_required_is_unavailable(self):
         check = StereoCheck(self.diagnostics, 'required')

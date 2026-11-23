@@ -379,13 +379,15 @@ class StereoCheck:
                       else CheckStatus.SKIPPED)
             return CheckResult(status, 'stereo_not_ready')
         session.diagnostics['stereo'] = result
-        if self.mode != 'required':
-            return CheckResult(CheckStatus.SKIPPED, 'advisory')
         decision = result.get('decision')
+        if decision == SPOOF:
+            # SPOOF — обнаруженная атака, независимо от режима проверки
+            return CheckResult(CheckStatus.FAIL, 'liveness_spoof')
+        if self.mode != 'required':
+            # advisory разрешить доступ не может, только запретить по SPOOF
+            return CheckResult(CheckStatus.SKIPPED, 'advisory')
         if decision == LIVE:
             return CheckResult(CheckStatus.PASS, 'stereo_live')
-        if decision == SPOOF:
-            return CheckResult(CheckStatus.FAIL, 'liveness_spoof')
         return CheckResult(
             CheckStatus.NOT_AVAILABLE,
             result.get('reason') or 'stereo_inconclusive',

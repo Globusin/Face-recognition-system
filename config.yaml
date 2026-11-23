@@ -59,7 +59,7 @@ stereo_pad:
 # Диагностическая проверка объёма лица по двум камерам
 # Пороги предварительные: результат не участвует в разрешении доступа
 stereo_liveness:
-  mode: off                  # off | advisory | required
+  mode: advisory             # off | advisory | required
   parallel: false            # замер во время распознавания; включение после профилирования
   result_timeout_s: 1.5      # ожидание результата рабочего потока при required
   calibration_id: null       # Каталог в stereo_calibration.output_dir
