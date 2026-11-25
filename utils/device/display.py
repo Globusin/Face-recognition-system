@@ -309,7 +309,10 @@ class TFTDisplay(Display):
         self._last_state = state
 
     def _render_state(self, state, detail):
-        if self._show_image_state(state):
+        # Известную причину отказа важнее показать, чем проигрывать анимацию
+        if detail and state in (DisplayState.ACCESS_DENIED, DisplayState.ERROR):
+            pass
+        elif self._show_image_state(state):
             return
 
         theme = STATE_THEMES.get(state, STATE_THEMES[DisplayState.STANDBY])

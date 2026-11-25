@@ -75,7 +75,8 @@ class AuthenticationEngine:
                  stereo_check: Optional[SessionCheck] = None,
                  challenge_check: Optional[SessionCheck] = None,
                  policy=None,
-                 on_state: Optional[Callable] = None):
+                 on_state: Optional[Callable] = None,
+                 on_finish: Optional[Callable] = None):
         for value in (session_timeout, cooldown_seconds, door_open_seconds):
             if not math.isfinite(value) or value <= 0:
                 raise ValueError('Интервалы аутентификации должны быть положительными')
@@ -90,6 +91,7 @@ class AuthenticationEngine:
         self.challenge_check = challenge_check
         self.policy = policy
         self.on_state = on_state
+        self.on_finish = on_finish
         self.state = AuthenticationState.IDLE
         self.session = None
         self._lock = threading.RLock()
@@ -100,16 +102,49 @@ class AuthenticationEngine:
 
     def _transition(self, state, reason=''):
         self.state = state
+        finished = False
         if self.session is not None:
             self.session.state = state
             self.session.updated_at = self.clock()
             if reason:
                 self.session.reason = reason
-            if state in (AuthenticationState.GRANTED, AuthenticationState.DENIED,
-                         AuthenticationState.ERROR):
+            if (state in (AuthenticationState.GRANTED, AuthenticationState.DENIED,
+                          AuthenticationState.ERROR)
+                    and self.session.finished_at is None):
                 self.session.finished_at = self.clock()
+                # Итог попытки записывается один раз, даже если затем
+                # обнаружится ошибка закрытия замка
+                finished = True
         if self.on_state is not None:
             self.on_state(state)
+        if finished and self.on_finish is not None:
+            self.on_finish(self.session)
+
+    def snapshot(self):
+        """Копия состояния для API без изображений и embeddings"""
+        with self._lock:
+            session = self.session
+            base = {
+                'state': self.state.value,
+                'door_open': self._door_deadline is not None,
+            }
+            if session is None:
+                return dict(base, session=None)
+            return dict(base, session={
+                'session_id': session.session_id,
+                'started_at': session.started_at,
+                'updated_at': session.updated_at,
+                'finished_at': session.finished_at,
+                'user_id': session.user_id,
+                'distance': session.distance,
+                'reason': session.reason,
+                'unlock_attempted': session.unlock_attempted,
+                'checks': {
+                    name: {'status': result.status.value, 'reason': result.reason}
+                    for name, result in session.checks.items()
+                },
+                'diagnostics': dict(session.diagnostics),
+            })
 
     def begin(self, tracked_face_id=None):
         """Создаёт сессию после детекции; ID трека не является ID личности."""

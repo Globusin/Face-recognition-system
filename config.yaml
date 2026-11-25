@@ -151,6 +151,10 @@ bayesian_scoring:
   # кадры дают лишь часть свидетельства первого
   correlation_discount: 0.4
 
+# Журнал доступов и отказов в PostgreSQL: без изображений и embeddings
+audit:
+  enabled: true
+
 # Параметры работы системы
 detection_interval: 2  # Интервал в секундах между попытками распознавания
 door_open_time: 2      # Время в секундах, на которое открывается дверь после успешного распознавания
@@ -176,6 +180,7 @@ logging:
 # заданий baseline_timeout и action_timeout должны в него укладываться.
 authentication:
   session_timeout_seconds: 20.0
+  policy_file: "data/security/authentication-policy.json"  # Переопределение из админ-панели
   capture:
     max_frame_age_seconds: 0.5
     frame_wait_seconds: 1.0

@@ -147,16 +147,15 @@ class CalibrationApiTests(unittest.TestCase):
             response = self.client.post('/api/calibration/start', headers=self.header, json={})
             self.assertEqual(response.status_code, 400)
 
-    def test_recognition_and_enrollment_blocked_during_calibration(self):
+    def test_authenticate_endpoint_disabled_and_enrollment_blocked(self):
         gate = MaintenanceMode()
         gate.requested.set()
         with patch('src.app.maintenance', gate), \
                 patch('src.app.authorize_admin', return_value=None), \
-                patch('utils.face.recognition.recognize_face_from_camera') as recognize, \
                 patch('src.app.create_embeddings_from_camera') as enroll:
-            self.assertEqual(self.client.post('/api/authenticate').status_code, 409)
+            # Отдельное распознавание через API удалено: маршрута нет
+            self.assertEqual(self.client.post('/api/authenticate').status_code, 405)
             self.assertEqual(self.client.post('/api/add_user?name=test').status_code, 409)
-        recognize.assert_not_called()
         enroll.assert_not_called()
 
     def test_late_result_cannot_unlock_during_calibration(self):

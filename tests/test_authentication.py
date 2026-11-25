@@ -145,6 +145,25 @@ class AuthenticationEngineTests(unittest.TestCase):
         self.assertEqual(self.engine.session.reason, 'stereo_required')
         self.lock.unlock.assert_not_called()
 
+    def test_snapshot_contains_checks_without_biometrics(self):
+        self.engine.challenge_check = lambda session: CheckResult(CheckStatus.PASS)
+        self.evaluate()
+        snapshot = self.engine.snapshot()
+        self.assertEqual(snapshot['state'], 'GRANTED')
+        self.assertTrue(snapshot['session']['unlock_attempted'])
+        self.assertEqual(
+            snapshot['session']['checks']['recognition']['status'], 'PASS',
+        )
+        self.assertNotIn('embedding', str(snapshot))
+
+    def test_finish_callback_runs_once(self):
+        finished = []
+        self.engine.on_finish = finished.append
+        self.evaluate()
+        self.assertEqual(len(finished), 1)
+        self.engine.fail('lock_failed')
+        self.assertEqual(len(finished), 1)
+
     def test_error_and_failed_unlock_are_safe(self):
         self.evaluate_error = Mock(side_effect=RuntimeError('camera'))
         self.engine.evaluate(self.engine.begin(), self.evaluate_error)

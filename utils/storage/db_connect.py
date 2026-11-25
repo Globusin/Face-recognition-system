@@ -2,6 +2,7 @@ import sys
 
 import psycopg
 import numpy as np
+from psycopg.types.json import Jsonb
 from contextlib import ExitStack, contextmanager
 from contextvars import ContextVar
 
@@ -72,6 +73,7 @@ def create_embeddings_tables():
     create_embeddings_table()
     create_users_table()
     create_users_to_embeddings_table()
+    create_access_audit_table()
 
 def create_embeddings_table():
     with create_connection() as conn:
@@ -159,6 +161,129 @@ def create_users_to_embeddings_table():
             
             conn.commit()
             log_debug("Таблица users_to_embeddings успешно создана")
+
+
+def create_access_audit_table():
+    """Журнал решений: без изображений и embeddings, только итог попытки"""
+    with create_connection() as conn:
+        with conn.cursor() as cur:
+            cur.execute("""
+                SELECT EXISTS (
+                    SELECT FROM information_schema.tables
+                    WHERE table_name = 'access_audit'
+                );
+            """)
+
+            table_exists = cur.fetchone()[0]
+
+            if table_exists:
+                log_debug("Таблица access_audit уже существует")
+                return
+
+            cur.execute("""
+                CREATE TABLE access_audit (
+                    id BIGSERIAL PRIMARY KEY,
+                    created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+                    type TEXT NOT NULL DEFAULT 'session'
+                        CHECK (type IN ('session', 'policy')),
+                    session_id TEXT,
+                    decision TEXT CHECK (decision IS NULL
+                        OR decision IN ('GRANTED', 'DENIED', 'ERROR')),
+                    reason TEXT NOT NULL DEFAULT '',
+                    user_id INTEGER REFERENCES users (id) ON DELETE SET NULL,
+                    distance DOUBLE PRECISION,
+                    checks JSONB NOT NULL DEFAULT '{}'::jsonb,
+                    stereo_decision TEXT,
+                    stereo_reason TEXT,
+                    duration_seconds DOUBLE PRECISION,
+                    unlock_attempted BOOLEAN NOT NULL DEFAULT FALSE,
+                    details JSONB
+                );
+            """)
+            cur.execute("""
+                CREATE INDEX IF NOT EXISTS access_audit_created_idx
+                ON access_audit (created_at DESC);
+            """)
+            cur.execute("""
+                CREATE INDEX IF NOT EXISTS access_audit_decision_idx
+                ON access_audit (type, decision, created_at DESC);
+            """)
+
+            conn.commit()
+            log_debug("Таблица access_audit успешно создана")
+
+
+def add_audit_record(record):
+    """Добавляет обезличенный итог попытки или изменение политики"""
+    details = record.get('details')
+    with create_connection() as conn:
+        with conn.cursor() as cur:
+            cur.execute("""
+                INSERT INTO access_audit
+                    (created_at, type, session_id, decision, reason, user_id,
+                     distance, checks, stereo_decision, stereo_reason,
+                     duration_seconds, unlock_attempted, details)
+                VALUES (COALESCE(%s::timestamptz, now()), %s, %s, %s, %s, %s,
+                        %s, %s, %s, %s, %s, %s, %s)
+            """, (
+                record.get('timestamp'), record.get('type', 'session'),
+                record.get('session_id'), record.get('decision'),
+                record.get('reason', ''), record.get('user_id'),
+                record.get('distance'), Jsonb(record.get('checks') or {}),
+                record.get('stereo_decision'), record.get('stereo_reason'),
+                record.get('duration_seconds'),
+                bool(record.get('unlock_attempted', False)),
+                Jsonb(details) if details is not None else None,
+            ))
+            conn.commit()
+
+
+def get_audit_records(limit=50, decision=None, kind=None):
+    """Последние записи журнала для административной панели"""
+    limit = min(max(int(limit), 1), 500)
+    conditions = []
+    parameters = []
+    if kind:
+        conditions.append('type = %s')
+        parameters.append(kind)
+    if decision:
+        conditions.append('decision = %s')
+        parameters.append(decision)
+    where = f"WHERE {' AND '.join(conditions)}" if conditions else ''
+    with create_connection() as conn:
+        with conn.cursor() as cur:
+            cur.execute(f"""
+                SELECT created_at, type, session_id, decision, reason, user_id,
+                       distance, checks, stereo_decision, stereo_reason,
+                       duration_seconds, unlock_attempted, details
+                FROM access_audit
+                {where}
+                ORDER BY id DESC
+                LIMIT %s
+            """, (*parameters, limit))
+            rows = cur.fetchall()
+    records = []
+    for row in rows:
+        created_at = row[0]
+        records.append({
+            'timestamp': (
+                created_at.isoformat() if hasattr(created_at, 'isoformat')
+                else created_at
+            ),
+            'type': row[1],
+            'session_id': row[2],
+            'decision': row[3],
+            'reason': row[4] or '',
+            'user_id': row[5],
+            'distance': row[6],
+            'checks': row[7] or {},
+            'stereo_decision': row[8],
+            'stereo_reason': row[9],
+            'duration_seconds': row[10],
+            'unlock_attempted': row[11],
+            'details': row[12],
+        })
+    return records
 
 
 def add_user_embedding(embedding):

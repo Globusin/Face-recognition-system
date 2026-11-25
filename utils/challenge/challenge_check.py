@@ -41,7 +41,7 @@ class UnavailableChallengeCheck:
         return CheckResult(CheckStatus.NOT_AVAILABLE, self.reason)
 
 
-def build_challenge_check(config, display, policy):
+def build_challenge_check(config, display, policy, on_progress=None):
     """Создаёт адаптер заданий или None, если политика явно отключена
 
     Ошибка конфигурации при непустой политике не считается отключением:
@@ -58,7 +58,7 @@ def build_challenge_check(config, display, policy):
         return UnavailableChallengeCheck(f'challenge_config_error: {error}')
 
     settings['count'] = policy.challenge_count
-    return ChallengeCheck(settings, policy, display)
+    return ChallengeCheck(settings, policy, display, on_progress=on_progress)
 
 
 class ChallengeCheck:
@@ -71,12 +71,14 @@ class ChallengeCheck:
     результат той же сессии не используется
     """
 
-    def __init__(self, settings, policy, display, clock=time.monotonic):
+    def __init__(self, settings, policy, display, on_progress=None,
+                 clock=time.monotonic):
         self.settings = settings
         self.policy = policy
         self.display = display
         self.clock = clock
         self.source = None
+        self.on_progress = on_progress
         self._used_sessions = set()
 
     def bind(self, source):
@@ -117,6 +119,8 @@ class ChallengeCheck:
     def _run(self, session, flow):
         last_stage = None
         last_observation = None
+        self._publish_progress(session, flow)
+        published_stage = flow.stage
         try:
             while not flow.finished:
                 now = self.clock()
@@ -153,6 +157,9 @@ class ChallengeCheck:
 
                 flow.feed(face, self.clock())
                 last_observation = observation
+                if flow.stage != published_stage:
+                    self._publish_progress(session, flow)
+                    published_stage = flow.stage
                 if flow.stage == 'prompt':
                     if flow.tasks:
                         flow.tasks[-1]['prompt_started_s'] = flow.task_time(self.clock())
@@ -160,12 +167,15 @@ class ChallengeCheck:
                     # Кадры до завершения вывода команды не засчитываются
                     flow.acknowledge_prompt(self.clock())
                     last_stage = 'action'
+                    self._publish_progress(session, flow)
+                    published_stage = flow.stage
         except ChallengeDisplayError:
             flow.fail('display_error', self.clock())
         except Exception as error:
             flow.fail('processing_error', self.clock())
             log_warning(f'Задания: ошибка выполнения: {type(error).__name__}: {error}')
 
+        self._publish_progress(session, flow)
         if flow.stage != 'passed':
             return CheckResult(CheckStatus.FAIL, flow.reason or 'challenge_failed')
         if last_observation is None:
@@ -174,6 +184,20 @@ class ChallengeCheck:
         if failure is not None:
             return CheckResult(CheckStatus.FAIL, failure)
         return CheckResult(CheckStatus.PASS, 'challenge_passed')
+
+    def _publish_progress(self, session, flow):
+        """Отдаёт панели текущую стадию задания, не мешая автомату"""
+        if self.on_progress is None:
+            return
+        snapshot = flow.snapshot(self.clock())
+        self.on_progress(session.session_id, {
+            'stage': snapshot['stage'],
+            'command': snapshot['command'],
+            'completed': snapshot['completed'],
+            'total': snapshot['total'],
+            'remaining_seconds': snapshot['remaining_seconds'],
+            'result': snapshot['result'],
+        })
 
     def _identity_failure(self, observation, session):
         """Один эмбеддинг после задания должен принадлежать тому же пользователю"""

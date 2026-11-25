@@ -88,30 +88,68 @@
             </div>
 
             <v-card variant="outlined" color="#ffab00">
-                <v-card-text class="result-grid ga-3">
+                <v-card-item>
+                    <div class="w-100 d-flex justify-space-between align-center flex-wrap ga-2">
+                        <span class="text-h5 text-brown-darken-2">Текущая попытка</span>
+                        <v-chip :color="authChipColor" variant="tonal">{{ authStateLabel }}</v-chip>
+                    </div>
+                </v-card-item>
+                <v-card-text class="auth-grid ga-3">
                     <div class="d-flex flex-column ga-1">
-                        <span class="text-body-2 text-brown">Статус</span>
-                        <strong :style="{ color: statusColor }">{{ status }}</strong>
+                        <span class="text-body-2 text-brown">Этап</span>
+                        <strong>{{ stageLabel }}</strong>
                     </div>
                     <div class="d-flex flex-column ga-1">
-                        <span class="text-body-2 text-brown">Последний пользователь</span>
-                        <strong>{{ lastUser.name }}</strong>
+                        <span class="text-body-2 text-brown">Итог</span>
+                        <strong :class="decisionClass">{{ decisionText }}</strong>
                     </div>
                     <div class="d-flex flex-column ga-1">
-                        <span class="text-body-2 text-brown">Близость</span>
-                        <strong>{{ recognitionResult.distance }}</strong>
+                        <span class="text-body-2 text-brown">Длительность</span>
+                        <strong>{{ elapsedText }}</strong>
+                    </div>
+                </v-card-text>
+                <v-divider />
+                <v-card-text>
+                    <div class="text-subtitle-2 text-brown mb-2">Проверки</div>
+                    <div class="d-flex flex-column ga-2">
+                        <div v-for="check in checkRows" :key="check.name"
+                             class="d-flex justify-space-between align-center flex-wrap ga-2">
+                            <span>{{ check.label }}</span>
+                            <div class="d-flex align-center ga-2">
+                                <span v-if="check.reason"
+                                      class="text-body-2 text-medium-emphasis">{{ check.reason }}</span>
+                                <v-chip size="small" :color="check.color" variant="tonal">{{ check.status }}</v-chip>
+                            </div>
+                        </div>
+                    </div>
+                    <div v-if="stereoText" class="mt-3 text-body-2">
+                        Объём лица: <strong>{{ stereoText }}</strong>
+                    </div>
+                    <div v-if="challengeText" class="mt-4 pa-3 rounded bg-orange-lighten-5">
+                        <div class="text-body-2 text-brown">Задание</div>
+                        <div class="text-h6">{{ challengeText }}</div>
+                        <div class="text-body-2">
+                            {{ challengeStageText }}<span v-if="challengeSeconds !== null"> · осталось {{ challengeSeconds }} с</span>
+                        </div>
+                    </div>
+                    <div v-if="reasonText" class="mt-3 text-body-2">
+                        Причина: <strong>{{ reasonText }}</strong>
+                    </div>
+                    <div v-if="authUnavailable" class="mt-3 text-body-2 text-warning">
+                        Нет связи с Monitor: состояние устарело
                     </div>
                 </v-card-text>
             </v-card>
-
-            <v-btn @click="authenticateUser" variant="elevated" color="#d84315" prepend-icon="mdi-face-recognition">
-                Аутентификация
-            </v-btn>
         </div>
     </div>
 </template>
 
 <script>
+import {
+    CHALLENGE_STAGE_LABELS, CHECK_LABELS, COMMAND_LABELS, STEREO_DECISION_LABELS,
+    decisionLabel, reasonLabel, stateLabel, statusColor, statusLabel,
+} from '../authenticationLabels';
+
 export default {
     name: 'FaceAuthentication',
     emits: ['maintenance'],
@@ -121,15 +159,18 @@ export default {
             haarPreview: false,
             stopped: false,
             statusLoading: false,
-            status: 'Неизвестно',
-
-            lastUser: { name: 'Неизвестно' },
-
-            recognitionResult: { distance: '—' },
-
-            users: [],
-
-            statusColor: '#5d4037',
+            authState: {
+                state: 'IDLE',
+                decision: null,
+                reason: '',
+                identity_matched: false,
+                checks: {},
+                stereo: {},
+                challenge: null,
+                elapsed_seconds: null,
+            },
+            authTimer: null,
+            authUnavailable: false,
 
             cameraStatus: {
                 preview_available: false,
@@ -167,10 +208,11 @@ export default {
         this.stopped = false;
         this.cameraStatus.preview_available = false;
         this.requestController = new AbortController();
-        this.loadUsers();
         this.loadCameraStatus();
+        this.loadAuthenticationState();
         this.cameraStatusTimer = window.setInterval(this.loadCameraStatus, 5000);
         this.cameraFrameTimer = window.setInterval(this.refreshCameraFrames, 1000);
+        this.authTimer = window.setInterval(this.loadAuthenticationState, 1000);
     },
     deactivated() {
         this.stopCameraUpdates();
@@ -211,6 +253,66 @@ export default {
                 };
             });
         },
+        authStateLabel() {
+            return stateLabel(this.authState.state);
+        },
+        authChipColor() {
+            const colors = {
+                GRANTED: 'success',
+                DENIED: 'error',
+                ERROR: 'error',
+                CHALLENGE: 'warning',
+                TRACKING: 'info',
+                EVALUATING: 'info',
+            };
+            return colors[this.authState.state] || 'grey';
+        },
+        stageLabel() {
+            return stateLabel(this.authState.state);
+        },
+        decisionText() {
+            return decisionLabel(this.authState.decision);
+        },
+        decisionClass() {
+            if (this.authState.decision === 'GRANTED') return 'text-success';
+            if (this.authState.decision === 'DENIED') return 'text-error';
+            return '';
+        },
+        elapsedText() {
+            const value = this.authState.elapsed_seconds;
+            return typeof value === 'number' ? `${value.toFixed(1)} с` : '—';
+        },
+        checkRows() {
+            return ['recognition', 'stereo', 'challenge'].map((name) => {
+                const check = (this.authState.checks && this.authState.checks[name]) || {};
+                return {
+                    name,
+                    label: CHECK_LABELS[name],
+                    status: statusLabel(check.status),
+                    color: statusColor(check.status),
+                    reason: check.reason ? reasonLabel(check.reason) : '',
+                };
+            });
+        },
+        stereoText() {
+            const value = this.authState.stereo && this.authState.stereo.decision;
+            return value ? (STEREO_DECISION_LABELS[value] || value) : '';
+        },
+        challengeText() {
+            const command = this.authState.challenge && this.authState.challenge.command;
+            return command ? (COMMAND_LABELS[command] || command) : '';
+        },
+        challengeStageText() {
+            const stage = this.authState.challenge && this.authState.challenge.stage;
+            return stage ? (CHALLENGE_STAGE_LABELS[stage] || stage) : '';
+        },
+        challengeSeconds() {
+            const value = this.authState.challenge && this.authState.challenge.remaining_seconds;
+            return typeof value === 'number' ? value : null;
+        },
+        reasonText() {
+            return this.authState.reason ? reasonLabel(this.authState.reason) : '';
+        },
     },
     methods: {
         stopCameraUpdates() {
@@ -218,8 +320,10 @@ export default {
             this.requestController?.abort();
             window.clearInterval(this.cameraStatusTimer);
             window.clearInterval(this.cameraFrameTimer);
+            window.clearInterval(this.authTimer);
             this.cameraStatusTimer = null;
             this.cameraFrameTimer = null;
+            this.authTimer = null;
             this.cameraFrameUrls = { primary: '', secondary: '' };
         },
         formatNumber(value) {
@@ -279,44 +383,20 @@ export default {
             }
         },
 
-        async loadUsers() {
+        async loadAuthenticationState() {
+            if (this.stopped || document.hidden) return;
             try {
-                const response = await fetch('/api/get_users', { signal: this.requestController.signal });
+                const response = await fetch('/api/authentication/state', {
+                    signal: this.requestController.signal,
+                });
                 if (!response.ok) {
                     throw new Error(`HTTP error! status: ${response.status}`);
                 }
-                const data = await response.json();
-                this.users = data;
+                this.authState = await response.json();
+                this.authUnavailable = false;
             } catch (error) {
                 if (this.stopped) return;
-                console.error('Ошибка загрузки пользователей:', error);
-                this.status = 'Ошибка загрузки пользователей';
-            }
-        },
-
-        async authenticateUser() {
-            this.status = 'Выполняется аутентификация...';
-
-            try {
-                const response = await fetch('/api/authenticate', {
-                    method: 'POST',
-                    signal: this.requestController.signal,
-                });
-                const data = await response.json();
-
-                this.recognitionResult = data;
-                this.lastUser = this.users.find((u) => u.id == data.user_id) || { name: 'Неизвестно' };
-
-                if (data.status === 'success') {
-                    this.status = 'Личность подтверждена';
-                    this.statusColor = '#2e7d32';
-                } else {
-                    this.status = data.message || 'Аутентификация не удалась';
-                    this.statusColor = '#5d4037';
-                }
-                await this.loadCameraStatus();
-            } catch (error) {
-                this.status = 'Ошибка соединения';
+                this.authUnavailable = true;
             }
         },
     },
@@ -377,11 +457,17 @@ export default {
     grid-template-columns: repeat(4, minmax(0, 1fr));
 }
 
+.auth-grid {
+    display: grid;
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+}
+
 @media (max-width: 700px) {
     .camera-grid,
     .camera-metrics,
     .result-grid,
-    .pairing-summary {
+    .pairing-summary,
+    .auth-grid {
         grid-template-columns: 1fr;
     }
 }

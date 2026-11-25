@@ -9,7 +9,10 @@ sys.path.append(str(Path(__file__).parent.parent))
 from utils.access.authentication import AuthenticationEngine, AuthenticationState
 from utils.face.recognition import recognize_face_from_camera
 from utils.capture.camera_manager import get_camera_manager, stop_camera_manager
+from utils.access.audit import PostgresAudit
 from utils.access.decision import AccessPolicy
+from utils.access.policy_store import apply_override, load_override, policy_path
+from utils.access.status import authentication_service
 from utils.challenge.challenge_check import (
     UnavailableChallengeCheck, build_challenge_check,
 )
@@ -40,6 +43,30 @@ def wait_or_stop(stop_event, seconds):
     return stop_event.wait(seconds)
 
 
+# Короткие причины для TFT 128x160, не больше двух строк
+REASON_TEXT = {
+    'identity_not_confirmed': 'Лицо не\nраспознано',
+    'liveness_spoof': 'Обнаружена\nподделка',
+    'stereo_required': 'Нет проверки\nобъёма',
+    'stereo_not_passed': 'Проверка\nобъёма',
+    'challenge_failed': 'Задание\nне выполнено',
+    'challenge_not_passed': 'Задание\nне выполнено',
+    'challenge_required': 'Нужно\nзадание',
+    'timeout': 'Время\nвышло',
+    'face_lost': 'Лицо\nпотеряно',
+    'multiple_faces': 'Несколько\nлиц',
+    'track_changed': 'Другое\nлицо',
+    'track_gap': 'Лицо\nпотеряно',
+    'observation_expired': 'Кадр\nустарел',
+    'camera_unavailable': 'Камера\nнедоступна',
+    'unlock_failed': 'Ошибка\nзамка',
+    'lock_failed': 'Ошибка\nзамка',
+    'processing_error': 'Ошибка\nобработки',
+    'policy_config_error': 'Ошибка\nнастроек',
+    'challenge_config_error': 'Ошибка\nзаданий',
+}
+
+
 def run_monitoring(stop_event=None):
     """
     Запускает непрерывный мониторинг камеры для распознавания лиц
@@ -48,8 +75,13 @@ def run_monitoring(stop_event=None):
     if stop_event is None:
         stop_event = threading.Event()
 
-    # Загружаем конфигурацию
+    # Загружаем конфигурацию и применяем политику, сохранённую администратором
     config = load_config()
+    if config.get('authentication'):
+        config = apply_override(config, load_override(policy_path(config)))
+    audit = config.get('audit') or {}
+    if audit and audit.get('enabled', True):
+        authentication_service.configure_audit(PostgresAudit())
 
     lock_controller = initialize_lock_controller(config)
     display = initialize_display(config)
@@ -72,10 +104,14 @@ def run_monitoring(stop_event=None):
             AuthenticationState.DENIED: DisplayState.ACCESS_DENIED,
             AuthenticationState.ERROR: DisplayState.ERROR,
         }
-        if state in states:
-            safe_display_state(display, states[state])
         session = engine.session
         reason = session.reason if session else ''
+        detail = None
+        if (state in (AuthenticationState.DENIED, AuthenticationState.ERROR)
+                and reason):
+            detail = REASON_TEXT.get(reason)
+        if state in states:
+            safe_display_state(display, states[state], detail)
         log_info(f"Аутентификация: {state.value}, причина: {reason or '-'}")
 
     try:
@@ -120,7 +156,10 @@ def run_monitoring(stop_event=None):
 
     challenge_check = None
     try:
-        challenge_check = build_challenge_check(config, display, policy)
+        challenge_check = build_challenge_check(
+            config, display, policy,
+            on_progress=authentication_service.publish_challenge_progress,
+        )
     except Exception as error:
         # Ошибка конфигурации не отключает обязательную проверку: запрещаем допуск
         log_error(f'Задания недоступны из-за ошибки конфигурации: {error}')
@@ -136,7 +175,10 @@ def run_monitoring(stop_event=None):
         challenge_check=challenge_check,
         policy=policy,
         on_state=show_authentication_state,
+        on_finish=authentication_service.record_session,
     )
+    authentication_service.attach(engine)
+    authentication_service.set_running_policy(policy)
 
     safe_display_state(display, DisplayState.STANDBY, "Готов к работе")
 
@@ -218,6 +260,8 @@ def run_monitoring(stop_event=None):
             safe_display_state(display, DisplayState.STANDBY, "Мониторинг\nостановлен")
         if stereo_worker is not None:
             stereo_worker.close()
+        authentication_service.flush_audit()
+        authentication_service.attach(None)
         log_info("Мониторинг остановлен")
 
 
