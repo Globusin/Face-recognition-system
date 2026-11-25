@@ -1,45 +1,21 @@
 <template>
-    <div class="d-flex flex-column ga-4">
-        <v-card variant="outlined" color="#ffab00" class="status-card">
-            <v-card-item>
-                <div class="w-100 d-flex justify-space-between align-center flex-wrap ga-3">
-                    <span class="text-h5 text-brown-darken-2">Аутентификация</span>
-                    <v-chip :color="chipColor" variant="tonal">{{ stateLabel(auth.state) }}</v-chip>
-                </div>
-            </v-card-item>
-            <v-card-text class="d-flex flex-column ga-4">
-                <div class="text-h4" :class="decisionClass">{{ decisionLabel(auth.decision) }}</div>
-                <div v-if="auth.reason" class="text-body-1">
-                    Причина: <strong>{{ reasonLabel(auth.reason) }}</strong>
-                </div>
-                <div v-if="challengeText" class="pa-4 rounded bg-orange-lighten-5">
-                    <div class="text-body-2 text-brown">Задание</div>
-                    <div class="text-h5">{{ challengeText }}</div>
-                    <div class="text-body-2">
-                        {{ challengeStageText }}<span v-if="seconds !== null"> · осталось {{ seconds }} с</span>
-                    </div>
-                </div>
-                <div class="d-flex flex-column ga-2">
-                    <div v-for="check in checks" :key="check.label"
-                         class="d-flex justify-space-between align-center ga-3">
-                        <span>{{ check.label }}</span>
-                        <v-chip size="small" :color="check.color" variant="tonal">{{ check.status }}</v-chip>
-                    </div>
-                </div>
-                <div v-if="stereoText" class="text-body-2 text-medium-emphasis">
-                    Объём лица: {{ stereoText }}
-                </div>
-                <div v-if="unavailable" class="text-warning text-body-2">
-                    Нет связи с Monitor: состояние устарело
-                </div>
-            </v-card-text>
-        </v-card>
-        <div class="text-center">
-            <v-btn to="/face-auth" variant="text" prepend-icon="mdi-shield-account">
-                Панель администратора
-            </v-btn>
+    <section class="entry-screen" aria-labelledby="entry-title">
+        <div class="entry-intro">
+            <h1 id="entry-title">Проход через систему</h1>
+            <p>Встаньте перед камерой и следуйте указаниям на экране.</p>
         </div>
-    </div>
+        <v-card variant="outlined" class="entry-status" role="status" aria-live="polite">
+            <v-icon :icon="entryIcon" :color="entryColor" size="64" />
+            <h2>{{ entryTitle }}</h2>
+            <p>{{ entryHint }}</p>
+            <v-progress-linear v-if="!unavailable && ['TRACKING', 'EVALUATING'].includes(auth.state)"
+                indeterminate color="primary" class="mt-5" />
+            <div v-if="!unavailable && auth.state === 'CHALLENGE' && seconds !== null" class="entry-time">
+                Осталось {{ seconds }} с
+            </div>
+        </v-card>
+        <p class="entry-note">Проверка начинается автоматически. Нажимать ничего не нужно.</p>
+    </section>
 </template>
 
 <script>
@@ -63,10 +39,34 @@ export default {
             },
             timer: null,
             unavailable: false,
+            loaded: false,
+            loading: false,
+            controller: null,
         };
     },
 
     computed: {
+        entryTitle() {
+            if (!this.loaded && !this.unavailable) return 'Подключение…';
+            if (this.unavailable || this.auth.state === 'ERROR') return 'Система недоступна';
+            if (this.auth.state === 'GRANTED' && !this.auth.door_open) return 'Проверка завершена';
+            if (this.auth.state === 'CHALLENGE') return this.challengeText || 'Следуйте указаниям';
+            return ({ IDLE: 'Готово к проходу', TRACKING: 'Смотрим на камеру', EVALUATING: 'Идёт проверка', GRANTED: 'Доступ разрешён', DENIED: 'Доступ не разрешён', COOLDOWN: 'Подождите' })[this.auth.state] || 'Ожидание';
+        },
+        entryHint() {
+            if (!this.loaded && !this.unavailable) return 'Получаем состояние устройства.';
+            if (this.unavailable || this.auth.state === 'ERROR') return 'Обратитесь к администратору, если связь не восстановится.';
+            if (this.auth.state === 'GRANTED' && !this.auth.door_open) return 'Дождитесь следующей попытки.';
+            return ({ IDLE: 'Подойдите к камере и смотрите прямо.', TRACKING: 'Держите лицо в кадре.', EVALUATING: 'Не отходите от камеры.', CHALLENGE: 'Выполните действие, затем смотрите прямо.', GRANTED: 'Можно проходить.', DENIED: 'Попробуйте ещё раз после завершения попытки.', COOLDOWN: 'Система готовится к следующей попытке.' })[this.auth.state] || 'Следуйте указаниям на устройстве.';
+        },
+        entryColor() {
+            if (this.unavailable || ['ERROR', 'DENIED'].includes(this.auth.state)) return 'error';
+            return this.auth.state === 'GRANTED' ? 'success' : 'primary';
+        },
+        entryIcon() {
+            if (this.unavailable || this.auth.state === 'ERROR') return 'mdi-alert-circle-outline';
+            return ({ GRANTED: 'mdi-check-circle-outline', DENIED: 'mdi-close-circle-outline', CHALLENGE: 'mdi-face-recognition', COOLDOWN: 'mdi-clock-outline' })[this.auth.state] || 'mdi-face-recognition';
+        },
         chipColor() {
             const colors = {
                 GRANTED: 'success',
@@ -118,6 +118,7 @@ export default {
 
     beforeUnmount() {
         window.clearInterval(this.timer);
+        this.controller?.abort();
     },
 
     methods: {
@@ -125,14 +126,22 @@ export default {
         decisionLabel,
         reasonLabel,
         async load() {
-            if (document.hidden) return;
+            if (document.hidden || this.loading) return;
+            this.loading = true;
+            this.controller = new AbortController();
+            const timeout = window.setTimeout(() => this.controller?.abort(), 4000);
             try {
-                const response = await fetch('/api/authentication/state');
+                const response = await fetch('/api/authentication/state', { cache: 'no-store', signal: this.controller.signal });
                 if (!response.ok) throw new Error(`HTTP ${response.status}`);
                 this.auth = await response.json();
                 this.unavailable = false;
+                this.loaded = true;
             } catch (error) {
                 this.unavailable = true;
+            } finally {
+                window.clearTimeout(timeout);
+                this.controller = null;
+                this.loading = false;
             }
         },
     },
@@ -140,8 +149,12 @@ export default {
 </script>
 
 <style scoped>
-.status-card {
-    width: min(720px, 100%);
-    align-self: center;
-}
+.entry-screen { width: min(600px, 100%); margin: clamp(32px, 9vh, 100px) auto; padding: 0 16px; text-align: center; }
+.entry-intro h1 { font-size: 28px; font-weight: 650; }
+.entry-intro p, .entry-note { color: #56616c; margin-top: 10px; }
+.entry-status { padding: clamp(24px, 6vw, 48px); margin: 28px 0 16px; min-height: 260px; display: flex; flex-direction: column; align-items: center; justify-content: center; }
+.entry-status h2 { font-size: clamp(24px, 4vw, 32px); line-height: 1.3; margin: 20px 0 8px; }
+.entry-status p { color: #465360; max-width: 38ch; }
+.entry-time { font-variant-numeric: tabular-nums; margin-top: 16px; }
+.entry-note { font-size: 14px; }
 </style>

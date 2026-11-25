@@ -1,8 +1,8 @@
 <template>
     <div class="d-flex justify-center w-100 h-100">
-        <div class="d-flex flex-column ga-4 border-md rounded pa-6" style="width: min(900px, 100%)">
+        <div class="d-flex flex-column ga-4 border-md rounded pa-4" style="width: 100%">
             <div class="w-100 d-flex justify-space-between align-center flex-wrap ga-2">
-                <span class="text-h4 text-deep-orange-darken-3">Камеры</span>
+                <h2 class="text-h5">Камеры</h2>
                 <div class="d-flex align-center ga-2 flex-wrap">
                     <v-chip :color="cameraStatus.dual_mode_enabled ? 'success' : 'grey'" variant="tonal">
                         {{ cameraStatus.dual_mode_enabled ? 'Две камеры' : 'Одна камера' }}
@@ -11,7 +11,7 @@
                 </div>
             </div>
 
-            <v-divider :thickness="4" variant="dashed" />
+            <v-divider  />
             <v-btn v-if="!cameraStatus.preview_available" prepend-icon="mdi-camera-cog"
                 variant="outlined" @click="$emit('maintenance')">Обслуживание камер</v-btn>
             <div v-if="!cameraStatus.preview_available" class="text-body-2 text-medium-emphasis">
@@ -32,7 +32,7 @@
                     v-for="camera in cameraCards"
                     :key="camera.role"
                     variant="outlined"
-                    style="border-color: #d9a441 !important"
+                    
                 >
                     <v-card-item>
                         <div class="d-flex justify-space-between align-center flex-wrap ga-3">
@@ -97,7 +97,7 @@
                 </div>
             </div>
 
-            <v-card variant="outlined" color="#ffab00">
+            <v-card variant="outlined" >
                 <v-card-item>
                     <div class="w-100 d-flex justify-space-between align-center flex-wrap ga-2">
                         <span class="text-h5 text-brown-darken-2">Текущая попытка</span>

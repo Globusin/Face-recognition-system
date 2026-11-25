@@ -81,7 +81,7 @@ def frontend(filename='index.html'):
     if filename.startswith('api/'):
         return jsonify(message='Маршрут API не найден'), 404
     folder = Path(__file__).resolve().parent.parent / 'Face-Recognition-Vue' / 'dist'
-    if filename in ('index.html', 'face-auth'):
+    if filename in ('index.html', 'face-auth', 'admin'):
         filename = 'index.html'
     return send_from_directory(folder, filename)
 

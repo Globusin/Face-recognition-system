@@ -1,6 +1,6 @@
 <template>
     <div class="d-flex flex-column ga-6">
-        <v-card variant="outlined" color="#ffab00">
+        <v-card variant="outlined" >
             <v-card-item>
                 <div class="w-100 d-flex justify-space-between align-center flex-wrap ga-2">
                     <span class="text-h5 text-brown-darken-2">Журнал доступов</span>
@@ -14,7 +14,7 @@
                             style="min-width: 170px"
                             @update:model-value="loadHistory"
                         />
-                        <v-btn icon="mdi-refresh" variant="text" :loading="loading" @click="loadHistory" />
+                        <v-btn icon="mdi-refresh" aria-label="Обновить журнал" variant="text" :loading="loading" @click="loadHistory" />
                     </div>
                 </div>
             </v-card-item>
@@ -83,7 +83,7 @@
                     persistent-hint
                 />
                 <div class="d-flex align-center ga-3 flex-wrap">
-                    <v-btn color="#d84315" variant="elevated" :loading="saving" @click="savePolicy">
+                    <v-btn color="primary" variant="elevated" :loading="saving" @click="savePolicy">
                         Сохранить политику
                     </v-btn>
                     <span v-if="saved" class="text-success">Сохранено</span>
