@@ -1,7 +1,9 @@
 """Свежие наблюдения лица для одной попытки аутентификации"""
 
 import math
+import threading
 import time
+from contextlib import contextmanager
 from dataclasses import dataclass
 from typing import Optional
 from uuid import uuid4
@@ -11,7 +13,7 @@ from utils.capture.face_detection_preview import face_detection_preview
 from utils.capture.frame_pairing import CameraFrame, FramePair
 from utils.capture.video_capture import detect_faces
 from utils.capture.camera_manager import CameraManager
-from utils.common.logger import log_debug
+from utils.common.logger import log_debug, log_warning
 
 
 CAPTURE_POLL_SECONDS = 0.1
@@ -70,9 +72,10 @@ class FaceObservationSource:
         self.last_pair = 0
         self.current = None
         self.started_at = self.clock()
+        self.closed = threading.Event()
 
     def check_cancelled(self, deadline=None):
-        if self.stop_event.is_set():
+        if self.stop_event.is_set() or self.closed.is_set():
             raise ObservationRejected('stopped')
         if self.cancel_event.is_set():
             raise ObservationRejected('maintenance')
@@ -177,6 +180,10 @@ class FaceObservationSource:
                 previous = self.current
                 gap = (frame.timestamp_ns - previous.primary.timestamp_ns) / 1e9
                 if gap <= 0 or gap > self.max_gap:
+                    log_warning(
+                        f'Разрыв трека: {gap:.3f} с, предел {self.max_gap:.3f} с; '
+                        f'кадры {previous.primary.sequence} -> {frame.sequence}'
+                    )
                     raise ObservationRejected('track_gap')
                 if box_overlap(previous.face_box, face_box) < self.min_overlap:
                     raise ObservationRejected('track_changed')
@@ -223,3 +230,132 @@ class FaceObservationSource:
                 accepted += 1
                 last_used_at = captured_at
             observation = None
+
+class ConcurrentFaceObservationSource:
+    """Один поток детекции на сессию, один потребитель свежих наблюдений.
+
+    Исходный источник используется только потоком сопровождения. Потребитель
+    получает последний подтверждённый кадр без очереди, повторов и повторной
+    детекции. Ошибка трека необратима до завершения сессии.
+    """
+
+    def __init__(self, source, deadline, on_rejected, *, interval=0.15):
+        if source.current is None:
+            raise ValueError('Сопровождение требует обнаруженного лица')
+        self.source = source
+        self.clock = source.clock
+        self.deadline = deadline
+        self.on_rejected = on_rejected
+        self.interval = float(interval)
+        if not math.isfinite(self.interval) or self.interval <= 0:
+            raise ValueError('Интервал сопровождения должен быть положительным')
+        self._condition = threading.Condition()
+        self._latest = source.current
+        self._consumed_sequence = 0
+        self._reason = None
+        self._thread = threading.Thread(
+            target=self._run, name='FaceTracking', daemon=True,
+        )
+
+    def __enter__(self):
+        self._thread.start()
+        return self
+
+    def __exit__(self, *_):
+        self.source.closed.set()
+        with self._condition:
+            self._condition.notify_all()
+        # Перед выходом из режима распознавания гарантированно прекращаем
+        # детекцию: следующий трек или обслуживание не делят этот источник.
+        self._thread.join()
+
+    def _reject(self, reason):
+        with self._condition:
+            if self.source.closed.is_set() or self._reason is not None:
+                return
+            self._reason = reason
+            self._condition.notify_all()
+        # Не вызываем автомат под блокировкой источника: при финальном
+        # решении автомат сам берёт эту блокировку.
+        self.on_rejected(reason)
+
+    def _run(self):
+        try:
+            while not self.source.closed.is_set():
+                started = self.clock()
+                observation = self.source.next(self.deadline)
+                if observation is None:
+                    raise ObservationRejected('face_lost')
+                with self._condition:
+                    if self.source.closed.is_set():
+                        return
+                    self._latest = observation
+                    self._condition.notify_all()
+                self.source.closed.wait(max(0.0, self.interval - (self.clock() - started)))
+        except ObservationRejected as error:
+            self._reject(str(error))
+        except CameraUnavailableError as error:
+            log_warning(f'Сопровождение: камера недоступна: {error}')
+            self._reject('camera_unavailable')
+        except Exception as error:
+            log_warning(f'Сопровождение: ошибка обработки: {type(error).__name__}: {error}')
+            self._reject('processing_error')
+
+    def _check_locked(self, deadline=None):
+        if self._reason is not None:
+            raise ObservationRejected(self._reason)
+        limit = self.deadline if deadline is None else min(self.deadline, deadline)
+        self.source.check_cancelled(limit)
+        age = self.clock() - self._latest.primary.timestamp_ns / 1e9
+        if age > self.source.max_gap:
+            log_warning(f'Нет наблюдения трека: {age:.3f} с, предел {self.source.max_gap:.3f} с')
+            raise ObservationRejected('track_gap')
+
+    def check_cancelled(self, deadline=None):
+        with self._condition:
+            self._check_locked(deadline)
+
+    def next(self, deadline=None, not_before=None):
+        """Возвращает новый кадр трека, пока поток продолжает сопровождение."""
+        limit = min(self.deadline, self.clock() + self.source.wait_timeout)
+        if deadline is not None:
+            limit = min(limit, deadline)
+        with self._condition:
+            while True:
+                self._check_locked(deadline)
+                observation = self._latest
+                timestamp = observation.primary.timestamp_ns / 1e9
+                if (observation.primary.sequence > self._consumed_sequence
+                        and (not_before is None or timestamp >= not_before)
+                        and self.source._fresh_pair(observation.primary, observation.pair)):
+                    self._consumed_sequence = observation.primary.sequence
+                    return observation
+                remaining = limit - self.clock()
+                if remaining <= 0:
+                    self._check_locked(deadline)
+                    raise ObservationRejected('observation_expired')
+                self._condition.wait(min(CAPTURE_POLL_SECONDS, remaining))
+
+    def observations(self, count, frame_delay, deadline):
+        last_used_at = None
+        for _ in range(count):
+            not_before = None if last_used_at is None else last_used_at + frame_delay
+            observation = self.next(deadline, not_before=not_before)
+            last_used_at = observation.primary.timestamp_ns / 1e9
+            yield observation
+
+    @contextmanager
+    def grant_guard(self):
+        """Не допускает выдачу доступа по потерянному или устаревшему треку."""
+        with self._condition:
+            reason = None
+            try:
+                self._check_locked()
+                observation = self._latest
+                if not self.source._fresh_pair(observation.primary, observation.pair):
+                    reason = 'observation_expired'
+            except ObservationRejected as error:
+                reason = str(error)
+            # Автомат проверяет результат и вызывает замок под той же
+            # блокировкой, поэтому уже опубликованная потеря трека не теряется.
+            yield reason

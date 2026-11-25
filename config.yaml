@@ -137,7 +137,7 @@ adaptive_recognition:
   min_successful_frames: 3   # Минимум совпадений с одним пользователем
   frame_interval_ms: 200     # Минимальный интервал между выбранными кадрами
   early_stop_threshold: 0.98 # Порог досрочного завершения при достаточных свидетельствах
-  max_attempt_duration_s: 2.5  # Предельная длительность попытки распознавания
+  max_attempt_duration_s: 8.0  # Лимит накопления свидетельств на Raspberry Pi
   max_distance_std: 0.05     # Пока оставлен существующий порог стабильности
 
 # Накопление свидетельств идентичности
@@ -185,5 +185,6 @@ authentication:
   capture:
     max_frame_age_seconds: 1.0  # Возраст кадра с учётом детекции на Raspberry Pi
     frame_wait_seconds: 2.0     # Общий лимит ожидания и повторного отбора наблюдения
-    max_track_gap_seconds: 2.0
+    max_track_gap_seconds: 2.0  # Максимальный разрыв наблюдений, не вычислений dlib
+    tracking_interval_seconds: 0.15  # Минимальный интервал запуска Haar в потоке сопровождения
     min_track_overlap: 0.25  # Начальный порог IoU, требует проверки на стенде

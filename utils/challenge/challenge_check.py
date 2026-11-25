@@ -150,6 +150,7 @@ class ChallengeCheck:
                     observation.primary.image,
                     observation.primary.timestamp_ns / 1e9,
                     face_box=observation.face_box,
+                    verify_identity=False,
                 )
                 if flow.stage != last_stage:
                     self._show_stage(flow)

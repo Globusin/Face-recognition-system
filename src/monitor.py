@@ -16,7 +16,9 @@ from utils.access.status import authentication_service
 from utils.challenge.challenge_check import (
     UnavailableChallengeCheck, build_challenge_check,
 )
-from utils.face.face_observations import FaceObservationSource, ObservationRejected
+from utils.face.face_observations import (
+    ConcurrentFaceObservationSource, FaceObservationSource, ObservationRejected,
+)
 from utils.access.lock_controller import initialize_lock_controller
 from utils.device.display import initialize_display, DisplayState
 from utils.common.config_loader import load_config
@@ -211,34 +213,44 @@ def run_monitoring(stop_event=None):
                     )
                     session_id = engine.begin(observation.track_id)
                     if session_id is not None:
-                        def recognize_current_track():
-                            on_pair = None
-                            if stereo_worker is not None:
-                                # Первая пара трека уходит в рабочий поток
-                                # стереопроверки, пока распознавание
-                                # продолжает сбор кадров
-                                on_pair = lambda pair: stereo_worker.submit(session_id, pair)
-                            try:
-                                return recognize_face_from_camera(
-                                    observation_source=source,
-                                    deadline=engine.session.deadline,
-                                    on_pair=on_pair,
-                                )
-                            except ObservationRejected as error:
-                                engine.cancel(str(error))
-                                return False, None, None
+                        with ConcurrentFaceObservationSource(
+                            source, engine.session.deadline,
+                            lambda reason: engine.cancel_session(session_id, reason),
+                            interval=settings.get('capture', {}).get(
+                                'tracking_interval_seconds', 0.15,
+                            ),
+                        ) as tracked_source:
+                            def recognize_current_track():
+                                on_pair = None
+                                if stereo_worker is not None:
+                                    # Первая пара трека уходит в рабочий поток
+                                    # стереопроверки, пока распознавание
+                                    # продолжает сбор кадров
+                                    on_pair = lambda pair: stereo_worker.submit(session_id, pair)
+                                try:
+                                    return recognize_face_from_camera(
+                                        observation_source=tracked_source,
+                                        deadline=engine.session.deadline,
+                                        on_pair=on_pair,
+                                    )
+                                except ObservationRejected as error:
+                                    engine.cancel(str(error))
+                                    return False, None, None
 
-                        if challenge_check is not None:
-                            challenge_check.bind(source)
-                        if stereo_check is not None:
-                            stereo_check.bind(source)
-                        try:
-                            engine.evaluate(session_id, recognize_current_track)
-                        finally:
                             if challenge_check is not None:
-                                challenge_check.release()
+                                challenge_check.bind(tracked_source)
                             if stereo_check is not None:
-                                stereo_check.release()
+                                stereo_check.bind(tracked_source)
+                            try:
+                                engine.evaluate(
+                                    session_id, recognize_current_track,
+                                    track_guard=tracked_source.grant_guard,
+                                )
+                            finally:
+                                if challenge_check is not None:
+                                    challenge_check.release()
+                                if stereo_check is not None:
+                                    stereo_check.release()
             except ObservationRejected:
                 continue
             except Exception as error:

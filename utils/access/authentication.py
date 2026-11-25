@@ -1,6 +1,7 @@
 """Управление жизненным циклом одной попытки без алгоритмов распознавания."""
 
 import math
+from contextlib import nullcontext
 import threading
 import time
 from dataclasses import dataclass, field
@@ -176,19 +177,19 @@ class AuthenticationEngine:
             return False
         return True
 
-    def evaluate(self, session_id, recognize):
+    def evaluate(self, session_id, recognize, *, track_guard=None):
         """Обрабатывает одну попытку; параллельный повторный вызов игнорируется."""
         with self._lock:
             if self._processing or not self._active(session_id):
                 return
             self._processing = True
         try:
-            self._evaluate(session_id, recognize)
+            self._evaluate(session_id, recognize, track_guard=track_guard)
         finally:
             with self._lock:
                 self._processing = False
 
-    def _evaluate(self, session_id, recognize):
+    def _evaluate(self, session_id, recognize, *, track_guard=None):
         with self._lock:
             if not self._active(session_id) or self.state != AuthenticationState.TRACKING:
                 return
@@ -253,17 +254,23 @@ class AuthenticationEngine:
                     if decision.status != 'GRANTED':
                         self.cancel(decision.reason)
                         return
-                self.session.unlock_attempted = True
-                # Даже неудачный unlock может частично сработать на оборудовании
-                self._door_deadline = self.clock() + self.door_open_seconds
-                if not self.lock_controller.unlock():
-                    self.fail('unlock_failed')
-                    return
-                self.maintenance.door_open.set()
-                if not self._active(session_id):
-                    self._close_door()
-                    return
-                self._transition(AuthenticationState.GRANTED)
+                with (track_guard() if track_guard is not None else nullcontext(None)) as reason:
+                    if reason:
+                        self.cancel(reason)
+                        return
+                    if not self._active(session_id):
+                        return
+                    self.session.unlock_attempted = True
+                    # Даже неудачный unlock может частично сработать на оборудовании
+                    self._door_deadline = self.clock() + self.door_open_seconds
+                    if not self.lock_controller.unlock():
+                        self.fail('unlock_failed')
+                        return
+                    self.maintenance.door_open.set()
+                    if not self._active(session_id):
+                        self._close_door()
+                        return
+                    self._transition(AuthenticationState.GRANTED)
         except Exception:
             with self._lock:
                 if self._active(session_id):
@@ -276,6 +283,12 @@ class AuthenticationEngine:
                               AuthenticationState.EVALUATING,
                               AuthenticationState.CHALLENGE):
                 self._transition(AuthenticationState.DENIED, reason)
+
+    def cancel_session(self, session_id, reason):
+        """Поздний результат потока сопровождения не отменяет другую сессию."""
+        with self._lock:
+            if self.session is not None and self.session.session_id == session_id:
+                self.cancel(reason)
 
     def face_lost(self, session_id):
         """Принимает событие потери лица только от текущего трека/сессии."""
