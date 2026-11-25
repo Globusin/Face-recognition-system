@@ -1,27 +1,27 @@
 <template>
     <div class="d-flex justify-center w-100 h-100">
         <div
-            class="d-flex flex-column justify-center h-100 ga-4 border-md rounded pa-6"
-            style="width: min(900px, 100%)"
+            class="d-flex flex-column ga-4 border-md rounded pa-4"
+            style="width: 100%"
         >
             <div class="w-100 d-flex justify-space-between align-center flex-wrap ga-2">
-                <span style="font-size: 30px; color: #d84315">Пользователи</span>
+                <span class="text-h5">Пользователи</span>
 
-                <v-btn @click="() => (dialogVisible = true)" variant="elevated" color="#d84315"> Добавить </v-btn>
+                <v-btn @click="() => (dialogVisible = true)" variant="elevated" color="primary"> Добавить </v-btn>
             </div>
 
-            <v-divider :thickness="4" variant="dashed" />
+            <v-divider  />
             <v-alert v-if="status" variant="tonal" role="status">{{ status }}</v-alert>
 
             <v-data-table :headers="headers" :items="users" :items-per-page="10" class="custom-table">
                 <template v-slot:item.actions="{ item }">
-                    <v-btn color="error" @click="deleteUser(item.id)" class="delete-btn"> Удалить </v-btn>
+                    <v-btn color="error" variant="text" size="small" @click="deleteUser(item.id)" class="delete-btn"> Удалить </v-btn>
                 </template>
             </v-data-table>
         </div>
         <v-dialog v-model="dialogVisible" max-width="500">
             <v-card>
-                <v-card-title class="text-h5" style="color: #d84315"> Регистрация нового пользователя </v-card-title>
+                <v-card-title class="text-h5" > Регистрация нового пользователя </v-card-title>
 
                 <v-card-text>
                     <p class="mb-4">Для добавления нового пользователя необходимо встать перед камерой.</p>
@@ -31,7 +31,7 @@
                         label="Введите имя пользователя"
                         placeholder="Иван Иванов"
                         variant="outlined"
-                        color="#d84315"
+                        color="primary"
                         @keyup.enter="addUser"
                     ></v-text-field>
                 </v-card-text>
@@ -39,7 +39,7 @@
                 <v-card-actions>
                     <v-spacer></v-spacer>
                     <v-btn color="grey-darken-1" variant="text" @click="() => (dialogVisible = false)"> Отмена </v-btn>
-                    <v-btn color="#d84315" variant="elevated" @click="addUser"> Подтвердить и добавить </v-btn>
+                    <v-btn color="primary" variant="elevated" @click="addUser"> Зарегистрировать </v-btn>
                 </v-card-actions>
             </v-card>
         </v-dialog>
@@ -134,43 +134,8 @@ export default {
 </script>
 
 <style scoped>
-.custom-table {
-    background-color: #ffffff !important;
-    border: 2px solid #8b4513 !important;
-    box-shadow: none;
-}
-
-.custom-table :deep(th) {
-    background-color: #f5deb3 !important;
-    color: #8b4513 !important;
-    font-weight: bold;
-    border-bottom: 2px solid #8b4513 !important;
-}
-
-.custom-table :deep(td) {
-    background-color: #ffffff !important;
-    color: #5a4a3a;
-    border-bottom: 1px solid #deb887 !important;
-}
-
-.custom-table :deep(tr:nth-child(even)) {
-    background-color: #faf8f5 !important;
-}
-
-.custom-table :deep(tr:hover) {
-    background-color: #fff8dc !important;
-}
-
-.delete-btn {
-    background-color: #cd5c5c !important;
-    color: #ffffff !important;
-    text-transform: none;
-    border: 2px solid #8b0000;
-    box-shadow: 2px 2px 0px rgba(139, 0, 0, 0.3);
-}
-
-.delete-btn:hover {
-    background-color: #dc143c !important;
-    box-shadow: 3px 3px 0px rgba(139, 0, 0, 0.4);
-}
+.custom-table { border: 1px solid #dce1e5; }
+.custom-table :deep(th) { background: #f3f5f7; font-weight: 600; }
+.custom-table :deep(td) { border-bottom: 1px solid #e2e6ea; }
+.delete-btn { text-transform: none; }
 </style>

@@ -11,8 +11,9 @@ const router = createRouter({
       component: StatusPanel,
     },
     {
-      path: '/face-auth',
-      name: 'face-auth',
+      path: '/admin',
+      alias: '/face-auth',
+      name: 'admin',
       component: FaceAuthView,
     },
   ],

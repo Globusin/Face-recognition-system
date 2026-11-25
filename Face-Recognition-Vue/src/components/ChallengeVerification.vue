@@ -1,14 +1,9 @@
 <template>
-    <section class="d-flex flex-column ga-4" style="max-width: 720px; width: 100%; margin: 0 auto">
+    <section class="d-flex flex-column ga-4" style="max-width: 860px; width: 100%">
         <h2 class="text-h5">
-            Случайные задания
+            Проверка действий
         </h2>
-        <v-chip
-            color="warning"
-            style="align-self: flex-start"
-        >
-            Эксперимент · замок не управляется
-        </v-chip>
+        <p class="text-body-2 text-medium-emphasis">Эксперимент: замок не управляется, личность не устанавливается.</p>
         <v-alert
             type="warning"
             variant="tonal"

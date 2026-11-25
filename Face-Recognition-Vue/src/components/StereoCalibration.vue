@@ -2,14 +2,14 @@
     <section class="calibration d-flex flex-column ga-4">
         <div class="d-flex align-center justify-space-between flex-wrap ga-3">
             <div>
-                <h2 class="text-h5">Калибровка стереопары</h2>
-                <p class="text-body-2 mt-2">Настройка двух камер по шахматной доске и проверка точности глубины.</p>
+                <h2 class="text-h5">Рабочая сессия</h2>
+                <p class="text-body-2 mt-2">{{ workflowHint }}</p>
             </div>
             <div class="d-flex align-center ga-2 flex-wrap">
                 <v-chip :color="state.active ? 'warning' : 'grey'">
                     {{ state.active ? 'Сессия активна · распознавание приостановлено' : 'Сессия не запущена' }}
                 </v-chip>
-                <v-btn v-if="authorized" icon="mdi-refresh" variant="text" title="Обновить состояние"
+                <v-btn v-if="authorized" icon="mdi-refresh" variant="text" title="Обновить состояние" aria-label="Обновить состояние"
                     :disabled="busy" @click="connect" />
             </div>
         </div>
@@ -31,41 +31,51 @@
         </v-card>
 
         <template v-if="authorized">
-            <div class="d-flex align-center flex-wrap ga-2">
-                <v-chip variant="outlined">Шахматная доска · 7 × 7 внутренних углов</v-chip>
-                <v-chip variant="outlined">Клетка · {{ state.active ? state.square_mm : squareMm }} мм</v-chip>
-                <v-chip variant="outlined">Расстояние между камерами · 120 мм</v-chip>
-            </div>
+            <ol class="workflow" aria-label="Этапы калибровки">
+                <li v-for="(label, index) in workflowLabels" :key="label"
+                    :class="{ current: workflowStep === index + 1, done: workflowStep > index + 1 }"
+                    :aria-current="workflowStep === index + 1 ? 'step' : undefined">
+                    <span>{{ index + 1 }}</span>{{ label }}
+                </li>
+            </ol>
+            <p class="text-body-2 text-medium-emphasis">Доска: 7 × 7 внутренних углов · клетка {{ state.active ? state.square_mm : squareMm }} мм · номинальная база 120 мм</p>
+            <v-alert v-if="state.active" type="warning" variant="tonal" density="compact">
+                Распознавание приостановлено. Перед выходом из панели завершите сессию.
+            </v-alert>
 
             <v-card v-if="!state.active" variant="outlined">
-                <v-card-title>1. Подготовьте камеры и доску</v-card-title>
+                <v-card-title>Начать работу</v-card-title>
                 <v-card-text class="d-flex flex-column ga-3">
                     <p class="text-body-2">Жёстко закрепите обе камеры, настройте фокус и измерьте сторону одной клетки шахматной доски. Во время всей сессии не меняйте положение камер друг относительно друга.</p>
-                    <v-text-field v-model.number="squareMm" type="number" min="0.1" step="0.1"
+                    <v-text-field v-model.number="squareMm" style="max-width: 280px" type="number" min="0.1" step="0.1"
                         label="Размер клетки доски, мм" variant="outlined" hide-details :disabled="busy" />
                     <v-checkbox v-model="mountingConfirmed" hide-details :disabled="busy"
                         label="Камеры закреплены, фокус и размер клетки проверены" />
                     <div class="d-flex align-center flex-wrap ga-3">
                         <v-btn prepend-icon="mdi-camera-control" :loading="busy"
-                            :disabled="!mountingConfirmed || !validSquare" @click="start">
-                            Начать калибровку
+                            :disabled="!mountingConfirmed || !validSquare" @click="start(false)">
+                            Новая калибровка
                         </v-btn>
-                        <span class="text-body-2">На следующем этапе потребуется минимум 15 обучающих и 3 контрольные пары.</span>
+                        <span class="text-body-2">15 обучающих и 3 контрольные пары.</span>
                     </div>
+                    <v-divider />
+                    <p class="text-body-2">Уже рассчитали калибровку? Запустите отдельную сессию проверки или измерений, не изменяя сохранённые параметры.</p>
+                    <v-text-field v-model="calibrationId" label="Номер сохранённой калибровки"
+                        variant="outlined" hide-details :disabled="busy" />
+                    <div><v-btn variant="outlined" :disabled="busy || !mountingConfirmed || !validSquare || !calibrationId"
+                        @click="start(true)">Начать проверку сохранённой калибровки</v-btn></div>
                 </v-card-text>
             </v-card>
 
-            <template v-if="state.active">
+            <template v-if="state.active && !verificationMode && !state.result">
                 <v-card variant="outlined">
-                    <v-card-title>1. Соберите пары кадров</v-card-title>
+                    <v-card-title>Сбор кадров</v-card-title>
                     <v-card-text class="d-flex flex-column ga-4">
-                        <div class="d-flex align-center flex-wrap ga-3">
-                            <v-chip :color="state.training_pairs >= 15 ? 'success' : 'warning'">
-                                Обучающие: {{ state.training_pairs }} / 15
-                            </v-chip>
-                            <v-chip :color="state.validation_pairs >= 3 ? 'success' : 'warning'">
-                                Контрольные: {{ state.validation_pairs }} / 3
-                            </v-chip>
+                        <div class="pair-progress">
+                            <div><div class="d-flex justify-space-between mb-2"><strong>Обучающие пары</strong><span>{{ state.training_pairs }} / 15</span></div>
+                                <v-progress-linear :model-value="Math.min(100, state.training_pairs / 15 * 100)" color="primary" height="6" /></div>
+                            <div><div class="d-flex justify-space-between mb-2"><strong>Контрольные пары</strong><span>{{ state.validation_pairs }} / 3</span></div>
+                                <v-progress-linear :model-value="Math.min(100, state.validation_pairs / 3 * 100)" color="primary" height="6" /></div>
                         </div>
                         <v-alert v-if="state.training_pairs >= 15 && state.validation_pairs >= 3"
                             type="success" variant="tonal">
@@ -76,15 +86,16 @@
                             изменяйте положение или наклон доски. Сначала соберите обучающие пары, затем контрольные.
                         </p>
 
-                        <div class="d-flex align-start flex-wrap ga-3">
-                            <v-select v-model="rotation" :items="rotations" item-title="title" item-value="value"
-                                label="Поворот порядка углов второй камеры" variant="outlined" hide-details
-                                :disabled="busy" style="min-width: 240px; flex: 1" @update:model-value="clearObservation" />
-                            <v-btn prepend-icon="mdi-camera-refresh" :loading="busy" @click="observe">
-                                Получить пару кадров
-                            </v-btn>
+                        <div class="d-flex align-center flex-wrap ga-3">
+                            <v-btn prepend-icon="mdi-camera-refresh" :loading="busy" @click="observe">Получить пару кадров</v-btn>
+                            <details class="technical-options">
+                                <summary>Порядок углов</summary>
+                                <v-select class="mt-2" v-model="rotation" :items="rotations" item-title="title" item-value="value"
+                                    label="Поворот второй камеры" variant="outlined" hide-details
+                                    :disabled="busy" @update:model-value="clearObservation" />
+                                <p class="text-body-2 mt-2">Меняйте 0° только при несовпадении нумерации углов.</p>
+                            </details>
                         </div>
-                        <span class="text-body-2">Поворот углов обычно равен 0°. Изменяйте его только если нумерация углов не совпадает на двух изображениях.</span>
 
                         <div class="calibration-images">
                             <div v-for="role in roles" :key="role" style="min-width: 0">
@@ -99,7 +110,7 @@
                                         :alt="role === 'primary' ? 'Кадр основной камеры' : 'Кадр дополнительной камеры'">
                                     <v-icon v-else icon="mdi-chess-board" size="48" color="grey" />
                                 </div>
-                                <v-btn class="mt-2" prepend-icon="mdi-download" variant="outlined"
+                                <v-btn class="mt-2" prepend-icon="mdi-download" variant="text" size="small"
                                     :disabled="!observation || busy" @click="downloadFrame(role)">
                                     Скачать исходный кадр
                                 </v-btn>
@@ -131,10 +142,10 @@
                     </v-card-text>
                 </v-card>
 
-                <v-card variant="outlined">
-                    <v-card-title>2. Рассчитайте калибровку</v-card-title>
+                <v-card v-if="state.training_pairs >= 15 && state.validation_pairs >= 3" variant="outlined">
+                    <v-card-title>Расчёт параметров</v-card-title>
                     <v-card-text class="d-flex flex-column ga-3">
-                        <p class="text-body-2">Для расчёта требуются как минимум 15 обучающих и 3 контрольные пары. После расчёта проверьте качество на новых кадрах.</p>
+                        <p class="text-body-2">Для расчёта требуются как минимум 15 обучающих и 3 контрольные пары. После расчёта завершите текущую сессию и начните отдельную проверку.</p>
                         <div class="d-flex align-center flex-wrap ga-3">
                             <v-btn prepend-icon="mdi-calculator" :loading="calculating"
                                 :disabled="busy || state.training_pairs < 15 || state.validation_pairs < 3"
@@ -156,6 +167,12 @@
                     </v-chip>
                 </v-card-title>
                 <v-card-text class="d-flex flex-column ga-3">
+                    <v-alert v-if="state.active && !verificationMode" type="info" variant="tonal">
+                        Параметры сохранены. Для независимой проверки нужно завершить эту сессию, затем начать новую.
+                    </v-alert>
+                    <div v-if="state.active && !verificationMode">
+                        <v-btn :disabled="busy" @click="finish">Завершить расчёт и вернуться к выбору проверки</v-btn>
+                    </div>
                     <span class="text-body-2">Рассчитана: {{ new Date(state.result.created_at).toLocaleString('ru-RU') }}</span>
                     <div class="calibration-metrics">
                         <div v-for="metric in metrics" :key="metric.label" class="d-flex flex-column ga-1">
@@ -187,19 +204,23 @@
                 </v-card-text>
             </v-card>
 
-            <template v-if="state.active">
+            <template v-if="state.active && verificationMode">
                 <v-card variant="outlined">
-                    <v-card-title>3. Проверьте качество на новых кадрах</v-card-title>
+                    <v-card-title>Независимая проверка</v-card-title>
                     <v-card-text class="d-flex flex-column ga-3">
-                        <p class="text-body-2">После расчёта снимите доску ещё в трёх разных положениях, не сохраняя эти пары как обучающие. Проверьте геометрию каждой пары, затем подтвердите качество.</p>
+                        <p class="text-body-2">Снимите доску минимум в трёх разных положениях в этой отдельной сессии. Проверьте геометрию каждой пары, затем подтвердите качество.</p>
                         <v-text-field v-model="calibrationId" label="Номер сохранённой калибровки"
                             variant="outlined" hide-details :disabled="busy" />
-                        <span class="text-body-2">Номер автоматически заполняется после расчёта. При необходимости можно указать номер ранее сохранённой калибровки.</span>
+                        <span class="text-body-2">Номер относится к исходной калибровке, а не к текущей сессии проверки.</span>
                         <v-checkbox v-model="mountingConfirmed" hide-details :disabled="busy"
                             label="Крепление, фокус и режим камер не менялись после калибровки" />
                         <div class="d-flex align-center flex-wrap ga-3">
-                            <v-btn prepend-icon="mdi-camera-refresh" variant="outlined" :loading="busy"
+                            <v-btn prepend-icon="mdi-camera-refresh" :loading="busy"
                                 @click="observe">Получить независимую пару</v-btn>
+                            <details class="technical-options"><summary>Порядок углов</summary>
+                                <v-select class="mt-2" v-model="rotation" :items="rotations" item-title="title" item-value="value"
+                                    label="Поворот второй камеры" hide-details :disabled="busy" @update:model-value="clearObservation" />
+                            </details>
                             <v-chip variant="outlined">Проверено в этой вкладке: {{ independentChecks.length }} / 3</v-chip>
                         </div>
                         <div v-if="observation" class="calibration-images">
@@ -215,7 +236,7 @@
                         <v-checkbox v-model="orientationConfirmed" hide-details :disabled="!pairReady || busy"
                             label="Углы доски на двух кадрах соответствуют друг другу" />
                         <v-btn prepend-icon="mdi-ruler"
-                            :disabled="!pairReady || !orientationConfirmed || !mountingConfirmed || !calibrationId || busy"
+                            :disabled="!pairReady || !orientationConfirmed || !mountingConfirmed || !calibrationId || busy || independentChecks.includes(observation?.observation_id)"
                             @click="verifyPair">Проверить геометрию пары</v-btn>
                         <div v-if="geometry" class="calibration-metrics">
                             <div v-for="metric in geometryMetrics" :key="metric.label" class="d-flex flex-column ga-1">
@@ -231,9 +252,11 @@
                     </v-card-text>
                 </v-card>
 
-                <v-expansion-panels multiple>
+                <h3 class="text-h6 mt-2">Исследовательские измерения</h3>
+                <p class="text-body-2 text-medium-emphasis">Дополнительные тесты не заменяют независимое подтверждение калибровки.</p>
+                <v-expansion-panels multiple variant="accordion">
                     <v-expansion-panel>
-                        <v-expansion-panel-title>Дополнительно · плоскостность и шум глубины</v-expansion-panel-title>
+                        <v-expansion-panel-title>Плоскостность и шум глубины</v-expansion-panel-title>
                         <v-expansion-panel-text>
                             <div class="d-flex flex-column ga-3">
                                 <p class="text-body-2">Закрепите доску неподвижно. Снимите новую пару и проверьте стабильность измеряемой глубины.</p>
@@ -264,7 +287,7 @@
                     </v-expansion-panel>
 
                     <v-expansion-panel>
-                        <v-expansion-panel-title>Дополнительно · задержка между камерами</v-expansion-panel-title>
+                        <v-expansion-panel-title>Задержка между камерами</v-expansion-panel-title>
                         <v-expansion-panel-text>
                             <div class="d-flex flex-column ga-3">
                                 <p class="text-body-2">Двигайте доску вверх и вниз, несколько раз меняя направление движения. Измерение длится 20 секунд и оценивает относительную задержку программного захвата.</p>
@@ -294,7 +317,7 @@
                     </v-expansion-panel>
 
                     <v-expansion-panel>
-                        <v-expansion-panel-title>Дополнительно · геометрия лица</v-expansion-panel-title>
+                        <v-expansion-panel-title>Геометрия лица</v-expansion-panel-title>
                         <v-expansion-panel-text>
                             <div class="d-flex flex-column ga-3">
                                 <v-switch v-model="checkTiming" hide-details :disabled="busy"
@@ -417,6 +440,11 @@
                     </v-expansion-panel>
                 </v-expansion-panels>
 
+            </template>
+            <div v-if="state.active && !state.result && !state.training_pairs && !state.validation_pairs && !verificationMode" class="text-body-2">
+                <v-btn variant="text" :disabled="busy" @click="recoverVerification">Продолжить ранее начатую сессию проверки</v-btn>
+            </div>
+            <template v-if="state.active">
                 <div class="d-flex align-center justify-space-between flex-wrap ga-3">
                     <span class="text-body-2">Завершение сессии возвращает систему из режима калибровки.</span>
                     <v-btn prepend-icon="mdi-stop" variant="outlined" :disabled="busy" @click="finish">
@@ -434,6 +462,7 @@ export default {
     data() {
         return {
             token: '', authorized: false, busy: false, calculating: false, error: '',
+            verificationMode: false,
             stationaryConfirmed: false, measuringQuality: false, quality: null, qualityReportId: '',
             reviewConfirmed: false, independentChecks: [],
             motionConfirmed: false, timingConfirmed: false, checkTiming: false, measuringTiming: false, timingResult: null,
@@ -459,6 +488,7 @@ export default {
         faceLighting: 'clearFaceResult',
         faceDistance: 'clearFaceResult',
         calibrationId() {
+            if (this.verificationMode) this.rememberVerification();
             this.clearFaceResult();
             this.independentChecks = [];
             this.reviewConfirmed = false;
@@ -479,6 +509,19 @@ export default {
         faceSeriesCount: 'clearFaceResult'
     },
     computed: {
+        workflowLabels() { return ['Подготовка', 'Сбор кадров', 'Расчёт', 'Проверка']; },
+        workflowStep() {
+            if (this.verificationMode && this.state.active) return 4;
+            if (this.state.result) return this.state.result.status === 'validated' ? 4 : 3;
+            if (!this.state.active) return 1;
+            return this.state.training_pairs >= 15 && this.state.validation_pairs >= 3 ? 3 : 2;
+        },
+        workflowHint() {
+            if (this.state.active && this.verificationMode) return 'Отдельная сессия проверки сохранённых параметров.';
+            if (this.state.active && this.state.result) return 'Расчёт завершён. Перейдите к отдельной проверке.';
+            if (this.state.active) return 'Соберите обучающие и контрольные пары.';
+            return 'Начните новую калибровку или проверьте сохранённую.';
+        },
         validFaceSeries() {
             return !this.denseDepth || (Number.isInteger(this.faceSeriesCount) && this.faceSeriesCount >= 2 && this.faceSeriesCount <= 10);
         },
@@ -759,6 +802,14 @@ export default {
                 if (action === 'face') this.faceController = null;
             }
         },
+        rememberVerification() {
+            try { sessionStorage.setItem('stereo-verification', JSON.stringify({ session: this.state.session_id, calibration: this.calibrationId })); } catch { /* optional recovery */ }
+        },
+        recoverVerification() {
+            this.verificationMode = true;
+            this.clearObservation();
+            this.rememberVerification();
+        },
         async connect() {
             const data = await this.request('status');
             if (data) {
@@ -766,16 +817,27 @@ export default {
                 this.state = data;
                 this.geometry = null;
                 this.review = null;
-                if (data.result?.session_id) this.calibrationId = data.result.session_id;
+                if (data.result?.session_id) {
+                    this.calibrationId = data.result.session_id;
+                    if (!data.active) this.squareMm = data.result.square_mm || this.squareMm;
+                }
+                try {
+                    const remembered = JSON.parse(sessionStorage.getItem('stereo-verification') || 'null');
+                    this.verificationMode = Boolean(data.active && remembered?.session === data.session_id);
+                    if (this.verificationMode && remembered.calibration) this.calibrationId = remembered.calibration;
+                } catch { /* optional recovery */ }
                 if (data.active && data.training_pairs >= 15 && data.validation_pairs < 3) this.validation = true;
             }
         },
-        async start() {
+        async start(verification = false) {
+            const target = this.calibrationId;
             const data = await this.request('start', { mounting_confirmed: this.mountingConfirmed, square_mm: this.squareMm });
             if (data) {
                 this.state = data;
                 this.review = null;
-                this.calibrationId = '';
+                this.verificationMode = verification;
+                this.calibrationId = verification ? target : '';
+                if (verification) this.rememberVerification();
                 this.mountingConfirmed = false;
                 this.validation = false;
                 this.clearObservation();
@@ -820,14 +882,28 @@ export default {
         },
         async finish() {
             const data = await this.request('finish', { session_id: this.state.session_id });
-            if (data) { this.state = data; this.clearObservation(); this.faceResult = null; this.faceConsent = false; }
+            if (data) {
+                this.state = data; this.clearObservation(); this.faceResult = null; this.faceConsent = false;
+                this.verificationMode = false;
+                if (data.result?.session_id) this.calibrationId = data.result.session_id;
+                try { sessionStorage.removeItem('stereo-verification'); } catch { /* optional recovery */ }
+            }
         }
     }
 };
 </script>
 
 <style scoped>
-.calibration { width: min(1100px, 100%); margin: 0 auto; }
+.calibration { width: 100%; }
+.workflow { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); list-style: none; padding: 0; border-bottom: 1px solid #dce1e5; gap: 10px; }
+.workflow li { padding: 10px 4px; display: flex; align-items: center; gap: 8px; color: #56616c; font-size: 14px; border-bottom: 2px solid transparent; }
+.workflow li span { font-variant-numeric: tabular-nums; font-weight: 600; }
+.workflow .current { border-bottom-color: rgb(var(--v-theme-primary)); color: rgb(var(--v-theme-primary)); font-weight: 600; }
+.workflow .done { color: #287348; }
+.pair-progress { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 24px; }
+.technical-options { font-size: 14px; color: #465360; max-width: 320px; }
+.technical-options summary { cursor: pointer; }
+@media (max-width: 600px) { .workflow { grid-template-columns: repeat(2, 1fr); } .pair-progress { grid-template-columns: 1fr; gap: 12px; } }
 .quality-button { max-width: 100%; min-height: 48px; height: auto; padding-top: 8px; padding-bottom: 8px; }
 .quality-button :deep(.v-btn__content) { white-space: normal; text-align: center; }
 .calibration-images { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 16px; }
