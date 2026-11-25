@@ -17,7 +17,9 @@ from utils.common.maintenance import maintenance
 from utils.stereo.stereo_calibration import calibration_session
 from utils.capture.face_detection_preview import face_detection_preview
 from utils.challenge.challenge_session import challenge_session
-from utils.access.api_security import authorize_admin, login_admin, FramePreviewLimiter
+from utils.access.api_security import (
+    FramePreviewLimiter, authorize_admin, live_preview_enabled, login_admin,
+)
 from utils.access.policy_store import (
     apply_override, load_override, policy_path, policy_values,
     save_override, validate_values,
@@ -188,25 +190,46 @@ def calibration_action(action):
 def camera_status():
     """Возвращает безопасную телеметрию камер без кадров и device paths"""
     status = get_public_camera_status()
-    status['preview_available'] = calibration_session.active and maintenance.requested.is_set()
+    maintenance_mode = calibration_session.active and maintenance.requested.is_set()
+    status['preview_available'] = bool(
+        status.get('live_preview_enabled') or maintenance_mode,
+    )
     return jsonify(status)
+
+
+def preview_limit_response():
+    response = jsonify(message='Превышена частота получения кадров')
+    response.status_code = 429
+    response.headers['Retry-After'] = '1'
+    return response
 
 
 def maintenance_preview(view):
     @wraps(view)
     def protected(*args, **kwargs):
         # HTTPS и права администратора уже проверены в protect_api
+        live = live_preview_enabled()
+        maintenance_mode = calibration_session.active and maintenance.requested.is_set()
+        if not live and not maintenance_mode:
+            return jsonify(
+                message='Предпросмотр выключен; кадры доступны только '
+                        'в режиме обслуживания камер',
+            ), 403
+        if not maintenance_mode:
+            # Живой предпросмотр читает последний кадр и не управляет конвейером
+            if frame_preview_limit.retry_after() > 0:
+                return preview_limit_response()
+            return view(*args, **kwargs)
         # Не ставим JPEG в очередь за долгим расчётом калибровки
         if not calibration_session.lock.acquire(blocking=False):
             return jsonify(message='Обслуживание занято, повторите запрос позже'), 409
         try:
             if not calibration_session.active or not maintenance.requested.is_set():
-                return jsonify(message='Кадры доступны только в режиме обслуживания камер'), 403
+                return jsonify(
+                    message='Кадры доступны только в режиме обслуживания камер',
+                ), 403
             if frame_preview_limit.retry_after() > 0:
-                response = jsonify(message='Превышена частота получения кадров')
-                response.status_code = 429
-                response.headers['Retry-After'] = '1'
-                return response
+                return preview_limit_response()
             # finish использует тот же lock: режим не завершится посреди подготовки кадра
             return view(*args, **kwargs)
         finally:

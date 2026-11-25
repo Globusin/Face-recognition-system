@@ -49,6 +49,12 @@ def admin_token():
         return ''
 
 
+def live_preview_enabled():
+    """Разрешает предпросмотр камер вне режима обслуживания"""
+    security = load_config().get('security', {}) or {}
+    return security.get('live_preview_enabled')
+
+
 def check_transport_and_network():
     if not request.is_secure:
         return jsonify(message='Для API требуется HTTPS'), 403

@@ -8,6 +8,7 @@ from unittest.mock import patch
 import numpy as np
 
 from src.app import app
+from utils.capture import camera_manager
 from utils.access.api_security import FramePreviewLimiter
 
 
@@ -106,6 +107,36 @@ class CameraFrameAccessTests(unittest.TestCase):
         finally:
             release.set()
             worker.join()
+
+    def test_live_preview_allowed_without_maintenance(self):
+        self.mode.active = False
+        self.requested.clear()
+        with patch('utils.access.api_security.load_config',
+                   return_value={'security': {'live_preview_enabled': True}}):
+            self.assertEqual(self.frame().status_code, 200)
+        self.manager.return_value.get_latest_frame.assert_called_once()
+
+    def test_status_reports_live_preview_flag(self):
+        self.mode.active = False
+        self.requested.clear()
+        with patch('src.app.get_public_camera_status',
+                   return_value={'live_preview_enabled': True}):
+            payload = self.client.get(
+                '/api/cameras/status', headers=self.headers,
+            ).json
+        self.assertTrue(payload['live_preview_enabled'])
+        self.assertTrue(payload['preview_available'])
+
+    def test_public_camera_status_reads_live_preview_flag(self):
+        self.manager.get_status.return_value = {
+            'started': True, 'cameras': {}, 'pairing': {},
+        }
+        with patch('utils.capture.camera_manager.get_camera_manager',
+                   return_value=self.manager), \
+                patch('utils.capture.camera_manager.load_config',
+                      return_value={'security': {'live_preview_enabled': True}}):
+            status = camera_manager.get_public_camera_status()
+        self.assertTrue(status['live_preview_enabled'])
 
     def test_status_reports_availability_without_opening_cameras(self):
         with patch('src.app.get_public_camera_status', return_value={}):

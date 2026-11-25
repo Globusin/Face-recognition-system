@@ -606,31 +606,37 @@ def _public_status(status, source, updated_at=None):
 
 
 def get_public_camera_status():
+    config = load_config()
+    security = config.get('security', {}) or {}
+    live_preview = bool(security.get('live_preview_enabled'))
+
     manager = get_camera_manager()
     live_status = manager.get_status()
     if live_status['started']:
-        return _public_status(live_status, source='live')
+        status = _public_status(live_status, source='live')
+    else:
+        report_name = config.get('cameras', {}).get(
+            'diagnostic_report', 'data/camera_diagnostics.json'
+        )
+        report_path = Path(report_name)
+        if not report_path.is_absolute():
+            report_path = PROJECT_ROOT / report_path
 
-    config = load_config()
-    report_name = config.get('cameras', {}).get(
-        'diagnostic_report', 'data/camera_diagnostics.json'
-    )
-    report_path = Path(report_name)
-    if not report_path.is_absolute():
-        report_path = PROJECT_ROOT / report_path
+        try:
+            report = json.loads(report_path.read_text(encoding='utf-8'))
+        except (OSError, json.JSONDecodeError):
+            status = _public_status(live_status, source='configuration')
+        else:
+            report_status = {
+                'dual_mode_enabled': True,
+                'cameras': report.get('cameras', {}),
+                'pairing': report.get('pairing', {}),
+            }
+            status = _public_status(
+                report_status,
+                source='diagnostic',
+                updated_at=report.get('generated_at'),
+            )
 
-    try:
-        report = json.loads(report_path.read_text(encoding='utf-8'))
-    except (OSError, json.JSONDecodeError):
-        return _public_status(live_status, source='configuration')
-
-    report_status = {
-        'dual_mode_enabled': True,
-        'cameras': report.get('cameras', {}),
-        'pairing': report.get('pairing', {}),
-    }
-    return _public_status(
-        report_status,
-        source='diagnostic',
-        updated_at=report.get('generated_at'),
-    )
+    status['live_preview_enabled'] = live_preview
+    return status

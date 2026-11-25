@@ -14,9 +14,18 @@
             <v-divider :thickness="4" variant="dashed" />
             <v-btn v-if="!cameraStatus.preview_available" prepend-icon="mdi-camera-cog"
                 variant="outlined" @click="$emit('maintenance')">Обслуживание камер</v-btn>
-            <v-switch v-model="haarPreview" label="Разметка Haar: основная камера" hide-details
-                :disabled="!cameraStatus.preview_available"
-                @update:model-value="refreshCameraFrames" />
+            <div v-if="!cameraStatus.preview_available" class="text-body-2 text-medium-emphasis">
+                Предпросмотр отключён в конфигурации безопасности и доступен только
+                в режиме обслуживания камер.
+            </div>
+            <div class="d-flex align-center flex-wrap ga-4">
+                <v-switch v-model="previewEnabled" label="Живой предпросмотр" hide-details
+                    :disabled="!cameraStatus.preview_available"
+                    @update:model-value="refreshCameraFrames" />
+                <v-switch v-model="haarPreview" label="Разметка Haar: основная камера" hide-details
+                    :disabled="!previewEnabled || !cameraStatus.preview_available"
+                    @update:model-value="refreshCameraFrames" />
+            </div>
 
             <div class="camera-grid ga-4">
                 <v-card
@@ -47,8 +56,9 @@
                             @error="cameraFrameErrors[camera.role] = true"
                         />
                         <div v-else class="camera-preview-empty">
-                            <v-icon icon="mdi-camera-off-outline" size="36"></v-icon>
-                            <span>{{ cameraStatus.preview_available ? 'Кадр недоступен' : 'Предпросмотр отключён' }}</span>
+                            <v-icon :icon="previewEnabled ? 'mdi-camera-off-outline' : 'mdi-eye-off-outline'"
+                                size="36"></v-icon>
+                            <span>{{ previewMessage }}</span>
                         </div>
                     </div>
                     <v-card-text class="camera-metrics ga-3">
@@ -156,6 +166,7 @@ export default {
     data() {
         return {
             requestController: null,
+            previewEnabled: false,
             haarPreview: false,
             stopped: false,
             statusLoading: false,
@@ -221,6 +232,10 @@ export default {
         this.stopCameraUpdates();
     },
     computed: {
+        previewMessage() {
+            if (!this.cameraStatus.preview_available) return 'Предпросмотр недоступен';
+            return this.previewEnabled ? 'Кадр недоступен' : 'Предпросмотр выключен';
+        },
         cameraDataLabel() {
             if (this.cameraStatus.source === 'live') {
                 return 'Текущие данные';
@@ -339,7 +354,10 @@ export default {
         },
 
         refreshCameraFrames() {
-            if (this.stopped || document.hidden) return;
+            if (this.stopped || document.hidden || !this.previewEnabled) {
+                this.cameraFrameUrls = { primary: '', secondary: '' };
+                return;
+            }
             if (!this.cameraStatus.preview_available) {
                 this.cameraFrameUrls = { primary: '', secondary: '' };
                 return;
@@ -369,6 +387,7 @@ export default {
                 }
                 this.cameraStatus = await response.json();
                 if (!this.cameraStatus.preview_available) {
+                    this.previewEnabled = false;
                     this.haarPreview = false;
                     this.cameraFrameUrls = { primary: '', secondary: '' };
                 }
