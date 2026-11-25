@@ -29,6 +29,8 @@ def setup_logger(name=__name__, level=None, log_file=None):
         logging.Logger: Настроенный логгер
     """
     logger = logging.getLogger(name)
+    # У логгера собственные обработчики; root Gunicorn не должен повторять запись.
+    logger.propagate = False
     
     # Избегаем дублирования хендлеров
     if logger.handlers:

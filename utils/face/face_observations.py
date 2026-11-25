@@ -143,7 +143,7 @@ class FaceObservationSource:
             f'предел={self.max_age * 1000:.1f} мс'
         )
 
-    def next(self, deadline=None, not_before=None):
+    def next(self, deadline=None, not_before=None, *, on_missing=None):
         """Отбирает свежее наблюдение, не продлевая лимит ожидания и трека"""
         wait_deadline = self.clock() + self.wait_timeout
         expired = False
@@ -160,7 +160,15 @@ class FaceObservationSource:
                     raise ObservationRejected('observation_expired') from None
                 raise
 
+            detection_started = self.clock()
             faces = self.detector(frame.image)
+            if self.current is not None:
+                gap = (frame.timestamp_ns - self.current.primary.timestamp_ns) / 1e9
+                log_debug(
+                    f'Haar: кадр {frame.sequence}, лиц={len(faces)}, '
+                    f'детекция={(self.clock() - detection_started) * 1000:.1f} мс, '
+                    f'интервал наблюдений={gap:.3f} с'
+                )
             face_detection_preview.record(frame, faces, 'TRACK' if self.current else 'SEARCH')
             self.check_cancelled(deadline)
             fresh = self._fresh_pair(frame, pair)
@@ -172,7 +180,10 @@ class FaceObservationSource:
 
             if len(faces) != 1:
                 if self.current is not None:
-                    raise ObservationRejected('face_lost' if not faces else 'multiple_faces')
+                    if not len(faces) and on_missing is not None:
+                        on_missing(frame)
+                        return None
+                    raise ObservationRejected('face_lost' if not len(faces) else 'multiple_faces')
                 return None
             face_box = faces[0]
             track_id = uuid4().hex
@@ -239,7 +250,7 @@ class ConcurrentFaceObservationSource:
     детекции. Ошибка трека необратима до завершения сессии.
     """
 
-    def __init__(self, source, deadline, on_rejected, *, interval=0.15):
+    def __init__(self, source, deadline, on_rejected, *, interval=0.15, missing_grace=0.5):
         if source.current is None:
             raise ValueError('Сопровождение требует обнаруженного лица')
         self.source = source
@@ -249,8 +260,14 @@ class ConcurrentFaceObservationSource:
         self.interval = float(interval)
         if not math.isfinite(self.interval) or self.interval <= 0:
             raise ValueError('Интервал сопровождения должен быть положительным')
+        self.missing_grace = float(missing_grace)
+        if not math.isfinite(self.missing_grace) or not 0 <= self.missing_grace <= source.max_gap:
+            raise ValueError('Допуск пропусков Haar должен быть в пределах разрыва трека')
         self._condition = threading.Condition()
         self._latest = source.current
+        self._missing_since = None
+        self._recovery_sequence = 0
+        self._verified_recovery = 0
         self._consumed_sequence = 0
         self._reason = None
         self._thread = threading.Thread(
@@ -279,21 +296,50 @@ class ConcurrentFaceObservationSource:
         # решении автомат сам берёт эту блокировку.
         self.on_rejected(reason)
 
+    def _mark_missing(self, frame):
+        with self._condition:
+            if self._missing_since is None:
+                self._missing_since = frame.timestamp_ns / 1e9
+                log_debug(f'Haar: лицо временно не найдено, кадр {frame.sequence}')
+            self._condition.notify_all()
+            self._check_locked()
+
     def _run(self):
         try:
             while not self.source.closed.is_set():
                 started = self.clock()
-                observation = self.source.next(self.deadline)
-                if observation is None:
-                    raise ObservationRejected('face_lost')
                 with self._condition:
-                    if self.source.closed.is_set():
-                        return
-                    self._latest = observation
-                    self._condition.notify_all()
+                    self._check_locked()
+                    read_deadline = self.deadline
+                    if self._missing_since is not None:
+                        read_deadline = min(
+                            read_deadline, self._missing_since + self.missing_grace,
+                        )
+                observation = self.source.next(
+                    read_deadline, on_missing=self._mark_missing,
+                )
+                if observation is not None:
+                    with self._condition:
+                        if self.source.closed.is_set():
+                            return
+                        if self._missing_since is not None:
+                            self._check_locked()
+                            self._recovery_sequence = observation.primary.sequence
+                            log_debug(
+                                f'Haar: лицо восстановлено через '
+                                f'{self.clock() - self._missing_since:.3f} с'
+                            )
+                            self._missing_since = None
+                        self._latest = observation
+                        self._condition.notify_all()
                 self.source.closed.wait(max(0.0, self.interval - (self.clock() - started)))
         except ObservationRejected as error:
-            self._reject(str(error))
+            reason = str(error)
+            with self._condition:
+                if (reason == 'timeout' and self.clock() < self.deadline
+                        and self._missing_since is not None):
+                    reason = 'face_lost'
+            self._reject(reason)
         except CameraUnavailableError as error:
             log_warning(f'Сопровождение: камера недоступна: {error}')
             self._reject('camera_unavailable')
@@ -306,6 +352,9 @@ class ConcurrentFaceObservationSource:
             raise ObservationRejected(self._reason)
         limit = self.deadline if deadline is None else min(self.deadline, deadline)
         self.source.check_cancelled(limit)
+        if (self._missing_since is not None
+                and self.clock() - self._missing_since >= self.missing_grace):
+            raise ObservationRejected('face_lost')
         age = self.clock() - self._latest.primary.timestamp_ns / 1e9
         if age > self.source.max_gap:
             log_warning(f'Нет наблюдения трека: {age:.3f} с, предел {self.source.max_gap:.3f} с')
@@ -325,7 +374,8 @@ class ConcurrentFaceObservationSource:
                 self._check_locked(deadline)
                 observation = self._latest
                 timestamp = observation.primary.timestamp_ns / 1e9
-                if (observation.primary.sequence > self._consumed_sequence
+                if (self._missing_since is None
+                        and observation.primary.sequence > self._consumed_sequence
                         and (not_before is None or timestamp >= not_before)
                         and self.source._fresh_pair(observation.primary, observation.pair)):
                     self._consumed_sequence = observation.primary.sequence
@@ -344,6 +394,25 @@ class ConcurrentFaceObservationSource:
             last_used_at = observation.primary.timestamp_ns / 1e9
             yield observation
 
+    def confirm_recovery(self, verify, deadline):
+        """После пропуска Haar заново подтверждает личность до допуска."""
+        while True:
+            with self._condition:
+                self._check_locked(deadline)
+                if (self._missing_since is None
+                        and self._recovery_sequence <= self._verified_recovery):
+                    return None
+            observation = self.next(deadline)
+            if not verify(observation):
+                return 'identity_changed'
+            with self._condition:
+                self._check_locked(deadline)
+                if (self._missing_since is None
+                        and observation.primary.sequence >= self._recovery_sequence):
+                    self._verified_recovery = self._recovery_sequence
+                    return None
+                # Ещё один пропуск за время вычисления: нужен новый кадр.
+
     @contextmanager
     def grant_guard(self):
         """Не допускает выдачу доступа по потерянному или устаревшему треку."""
@@ -352,7 +421,11 @@ class ConcurrentFaceObservationSource:
             try:
                 self._check_locked()
                 observation = self._latest
-                if not self.source._fresh_pair(observation.primary, observation.pair):
+                if self._missing_since is not None:
+                    reason = 'face_lost'
+                elif self._recovery_sequence > self._verified_recovery:
+                    reason = 'identity_not_confirmed'
+                elif not self.source._fresh_pair(observation.primary, observation.pair):
                     reason = 'observation_expired'
             except ObservationRejected as error:
                 reason = str(error)

@@ -7,7 +7,8 @@ from pathlib import Path
 sys.path.append(str(Path(__file__).parent.parent))
 
 from utils.access.authentication import AuthenticationEngine, AuthenticationState
-from utils.face.recognition import recognize_face_from_camera
+from utils.face.recognition import recognize_face_from_camera, match_embedding
+from utils.face.embedding_worker import EmbeddingWorker
 from utils.capture.camera_manager import get_camera_manager, stop_camera_manager
 from utils.access.audit import PostgresAudit
 from utils.access.decision import AccessPolicy
@@ -156,11 +157,13 @@ def run_monitoring(stop_event=None):
         # Диагностика не должна мешать работе монитора
         log_error(f"Стерео-проверка отключена: {error}")
 
+    embedding_worker = EmbeddingWorker()
     challenge_check = None
     try:
         challenge_check = build_challenge_check(
             config, display, policy,
             on_progress=authentication_service.publish_challenge_progress,
+            embedding_worker=embedding_worker,
         )
     except Exception as error:
         # Ошибка конфигурации не отключает обязательную проверку: запрещаем допуск
@@ -185,6 +188,14 @@ def run_monitoring(stop_event=None):
     safe_display_state(display, DisplayState.STANDBY, "Готов к работе")
 
     try:
+        # Загрузка модели не входит в тайм-аут первой сессии.
+        try:
+            def check_start():
+                if stop_event.is_set():
+                    raise ObservationRejected('stopped')
+            embedding_worker.start(check_start)
+        except Exception as error:
+            log_warning(f'Не удалось запустить процесс dlib: {error}')
         while not stop_event.is_set():
             engine.tick()
             if engine.state != AuthenticationState.IDLE:
@@ -219,6 +230,9 @@ def run_monitoring(stop_event=None):
                             interval=settings.get('capture', {}).get(
                                 'tracking_interval_seconds', 0.15,
                             ),
+                            missing_grace=settings.get('capture', {}).get(
+                                'tracking_missing_grace_seconds', 0.5,
+                            ),
                         ) as tracked_source:
                             def recognize_current_track():
                                 on_pair = None
@@ -232,10 +246,29 @@ def run_monitoring(stop_event=None):
                                         observation_source=tracked_source,
                                         deadline=engine.session.deadline,
                                         on_pair=on_pair,
+                                        embedding_worker=embedding_worker,
                                     )
                                 except ObservationRejected as error:
                                     engine.cancel(str(error))
                                     return False, None, None
+
+                            def confirm_recovery(session):
+                                def verify(observation):
+                                    embeddings = embedding_worker.compute(
+                                        observation.primary.image, observation.face_box,
+                                        lambda: tracked_source.check_cancelled(session.deadline),
+                                    )
+                                    if embeddings is None or not len(embeddings):
+                                        return False
+                                    user_id, _ = match_embedding(embeddings[0])
+                                    return user_id == session.user_id
+
+                                try:
+                                    return tracked_source.confirm_recovery(
+                                        verify, session.deadline,
+                                    )
+                                except ObservationRejected as error:
+                                    return str(error)
 
                             if challenge_check is not None:
                                 challenge_check.bind(tracked_source)
@@ -245,6 +278,7 @@ def run_monitoring(stop_event=None):
                                 engine.evaluate(
                                     session_id, recognize_current_track,
                                     track_guard=tracked_source.grant_guard,
+                                    pre_grant=confirm_recovery,
                                 )
                             finally:
                                 if challenge_check is not None:
@@ -270,6 +304,7 @@ def run_monitoring(stop_event=None):
             safe_display_state(display, DisplayState.ERROR, "Ошибка закрытия\nзамка")
         else:
             safe_display_state(display, DisplayState.STANDBY, "Мониторинг\nостановлен")
+        embedding_worker.close()
         if stereo_worker is not None:
             stereo_worker.close()
         authentication_service.flush_audit()

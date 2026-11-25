@@ -41,7 +41,7 @@ class UnavailableChallengeCheck:
         return CheckResult(CheckStatus.NOT_AVAILABLE, self.reason)
 
 
-def build_challenge_check(config, display, policy, on_progress=None):
+def build_challenge_check(config, display, policy, on_progress=None, *, embedding_worker=None):
     """Создаёт адаптер заданий или None, если политика явно отключена
 
     Ошибка конфигурации при непустой политике не считается отключением:
@@ -58,7 +58,8 @@ def build_challenge_check(config, display, policy, on_progress=None):
         return UnavailableChallengeCheck(f'challenge_config_error: {error}')
 
     settings['count'] = policy.challenge_count
-    return ChallengeCheck(settings, policy, display, on_progress=on_progress)
+    return ChallengeCheck(settings, policy, display, on_progress=on_progress,
+                          embedding_worker=embedding_worker)
 
 
 class ChallengeCheck:
@@ -72,7 +73,7 @@ class ChallengeCheck:
     """
 
     def __init__(self, settings, policy, display, on_progress=None,
-                 clock=time.monotonic):
+                 clock=time.monotonic, *, embedding_worker=None):
         self.settings = settings
         self.policy = policy
         self.display = display
@@ -80,6 +81,7 @@ class ChallengeCheck:
         self.source = None
         self.on_progress = on_progress
         self._used_sessions = set()
+        self.embedding_worker = embedding_worker
 
     def bind(self, source):
         """Привязывает источник наблюдений текущей попытки"""
@@ -203,9 +205,15 @@ class ChallengeCheck:
     def _identity_failure(self, observation, session):
         """Один эмбеддинг после задания должен принадлежать тому же пользователю"""
         try:
-            embeddings = get_embeddings_from_frame(
-                observation.primary.image, observation.face_box,
-            )
+            if self.embedding_worker is None:
+                embeddings = get_embeddings_from_frame(
+                    observation.primary.image, observation.face_box,
+                )
+            else:
+                embeddings = self.embedding_worker.compute(
+                    observation.primary.image, observation.face_box,
+                    lambda: self.source.check_cancelled(session.deadline),
+                )
             if not embeddings:
                 return 'identity_not_measured'
             user_id, distance = match_embedding(embeddings[0])

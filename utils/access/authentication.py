@@ -177,19 +177,19 @@ class AuthenticationEngine:
             return False
         return True
 
-    def evaluate(self, session_id, recognize, *, track_guard=None):
+    def evaluate(self, session_id, recognize, *, track_guard=None, pre_grant=None):
         """Обрабатывает одну попытку; параллельный повторный вызов игнорируется."""
         with self._lock:
             if self._processing or not self._active(session_id):
                 return
             self._processing = True
         try:
-            self._evaluate(session_id, recognize, track_guard=track_guard)
+            self._evaluate(session_id, recognize, track_guard=track_guard, pre_grant=pre_grant)
         finally:
             with self._lock:
                 self._processing = False
 
-    def _evaluate(self, session_id, recognize, *, track_guard=None):
+    def _evaluate(self, session_id, recognize, *, track_guard=None, pre_grant=None):
         with self._lock:
             if not self._active(session_id) or self.state != AuthenticationState.TRACKING:
                 return
@@ -244,6 +244,13 @@ class AuthenticationEngine:
                     if result.status != CheckStatus.PASS:
                         self.cancel(result.reason or f'{name}_not_passed')
                         return
+            # Повторная проверка личности после пропуска Haar может быть долгой.
+            # Выполняем её до взятия блокировок автомата и замка.
+            if pre_grant is not None:
+                reason = pre_grant(self.session)
+                if reason:
+                    self.cancel_session(session_id, reason)
+                    return
             with self._lock, self.maintenance.lock:
                 if not self._active(session_id):
                     return
