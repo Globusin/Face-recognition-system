@@ -68,7 +68,7 @@
             </v-card>
 
             <template v-if="state.active && !verificationMode && !state.result">
-                <v-card variant="outlined">
+                <v-card v-if="!pairsReady || showExtraPairs" variant="outlined">
                     <v-card-title>Сбор кадров</v-card-title>
                     <v-card-text class="d-flex flex-column ga-4">
                         <div class="pair-progress">
@@ -142,10 +142,13 @@
                     </v-card-text>
                 </v-card>
 
-                <v-card v-if="state.training_pairs >= 15 && state.validation_pairs >= 3" variant="outlined">
+                <v-card v-if="pairsReady" variant="outlined">
                     <v-card-title>Расчёт параметров</v-card-title>
                     <v-card-text class="d-flex flex-column ga-3">
-                        <p class="text-body-2">Для расчёта требуются как минимум 15 обучающих и 3 контрольные пары. После расчёта завершите текущую сессию и начните отдельную проверку.</p>
+                        <p class="text-body-2">Собрано {{ state.training_pairs }} обучающих и {{ state.validation_pairs }} контрольных пар. После расчёта завершите текущую сессию и начните отдельную проверку.</p>
+                        <div><v-btn variant="text" :disabled="busy" @click="showExtraPairs = !showExtraPairs">
+                            {{ showExtraPairs ? 'Скрыть сбор кадров' : 'Добавить ещё пары' }}
+                        </v-btn></div>
                         <div class="d-flex align-center flex-wrap ga-3">
                             <v-btn prepend-icon="mdi-calculator" :loading="calculating"
                                 :disabled="busy || state.training_pairs < 15 || state.validation_pairs < 3"
@@ -246,9 +249,15 @@
                         <v-divider />
                         <v-checkbox v-model="reviewConfirmed" hide-details :disabled="busy"
                             label="Независимые пары сняты в разных положениях, размер клетки и выравнивание проверены" />
-                        <v-btn class="quality-button" prepend-icon="mdi-check-decagram"
-                            :disabled="busy || !mountingConfirmed || !reviewConfirmed || !calibrationId"
-                            @click="validateCalibration">Подтвердить качество калибровки</v-btn>
+                        <div class="d-flex align-center flex-wrap ga-3">
+                            <v-btn class="quality-button" prepend-icon="mdi-check-decagram"
+                                :disabled="busy || !mountingConfirmed || !reviewConfirmed || !calibrationId"
+                                @click="validateCalibration">Подтвердить качество калибровки</v-btn>
+                            <span class="text-body-2 text-medium-emphasis">Сервер проверит наличие трёх разных пар и допустимые ошибки.</span>
+                        </div>
+                        <v-alert v-if="state.result?.status === 'validated' && state.result.session_id === calibrationId" type="success" variant="tonal">
+                            Качество подтверждено. Завершите сессию, чтобы возобновить распознавание.
+                        </v-alert>
                     </v-card-text>
                 </v-card>
 
@@ -462,7 +471,7 @@ export default {
     data() {
         return {
             token: '', authorized: false, busy: false, calculating: false, error: '',
-            verificationMode: false,
+            verificationMode: false, showExtraPairs: false,
             stationaryConfirmed: false, measuringQuality: false, quality: null, qualityReportId: '',
             reviewConfirmed: false, independentChecks: [],
             motionConfirmed: false, timingConfirmed: false, checkTiming: false, measuringTiming: false, timingResult: null,
@@ -509,6 +518,7 @@ export default {
         faceSeriesCount: 'clearFaceResult'
     },
     computed: {
+        pairsReady() { return this.state.training_pairs >= 15 && this.state.validation_pairs >= 3; },
         workflowLabels() { return ['Подготовка', 'Сбор кадров', 'Расчёт', 'Проверка']; },
         workflowStep() {
             if (this.verificationMode && this.state.active) return 4;
@@ -836,6 +846,7 @@ export default {
                 this.state = data;
                 this.review = null;
                 this.verificationMode = verification;
+                this.showExtraPairs = false;
                 this.calibrationId = verification ? target : '';
                 if (verification) this.rememberVerification();
                 this.mountingConfirmed = false;

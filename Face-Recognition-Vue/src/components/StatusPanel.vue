@@ -40,6 +40,8 @@ export default {
             timer: null,
             unavailable: false,
             loaded: false,
+            loading: false,
+            controller: null,
         };
     },
 
@@ -47,12 +49,14 @@ export default {
         entryTitle() {
             if (!this.loaded && !this.unavailable) return 'Подключение…';
             if (this.unavailable || this.auth.state === 'ERROR') return 'Система недоступна';
+            if (this.auth.state === 'GRANTED' && !this.auth.door_open) return 'Проверка завершена';
             if (this.auth.state === 'CHALLENGE') return this.challengeText || 'Следуйте указаниям';
             return ({ IDLE: 'Готово к проходу', TRACKING: 'Смотрим на камеру', EVALUATING: 'Идёт проверка', GRANTED: 'Доступ разрешён', DENIED: 'Доступ не разрешён', COOLDOWN: 'Подождите' })[this.auth.state] || 'Ожидание';
         },
         entryHint() {
             if (!this.loaded && !this.unavailable) return 'Получаем состояние устройства.';
             if (this.unavailable || this.auth.state === 'ERROR') return 'Обратитесь к администратору, если связь не восстановится.';
+            if (this.auth.state === 'GRANTED' && !this.auth.door_open) return 'Дождитесь следующей попытки.';
             return ({ IDLE: 'Подойдите к камере и смотрите прямо.', TRACKING: 'Держите лицо в кадре.', EVALUATING: 'Не отходите от камеры.', CHALLENGE: 'Выполните действие, затем смотрите прямо.', GRANTED: 'Можно проходить.', DENIED: 'Попробуйте ещё раз после завершения попытки.', COOLDOWN: 'Система готовится к следующей попытке.' })[this.auth.state] || 'Следуйте указаниям на устройстве.';
         },
         entryColor() {
@@ -114,6 +118,7 @@ export default {
 
     beforeUnmount() {
         window.clearInterval(this.timer);
+        this.controller?.abort();
     },
 
     methods: {
@@ -121,15 +126,22 @@ export default {
         decisionLabel,
         reasonLabel,
         async load() {
-            if (document.hidden) return;
+            if (document.hidden || this.loading) return;
+            this.loading = true;
+            this.controller = new AbortController();
+            const timeout = window.setTimeout(() => this.controller?.abort(), 4000);
             try {
-                const response = await fetch('/api/authentication/state');
+                const response = await fetch('/api/authentication/state', { cache: 'no-store', signal: this.controller.signal });
                 if (!response.ok) throw new Error(`HTTP ${response.status}`);
                 this.auth = await response.json();
                 this.unavailable = false;
                 this.loaded = true;
             } catch (error) {
                 this.unavailable = true;
+            } finally {
+                window.clearTimeout(timeout);
+                this.controller = null;
+                this.loading = false;
             }
         },
     },

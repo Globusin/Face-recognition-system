@@ -13,7 +13,7 @@
             <v-btn variant="text" prepend-icon="mdi-logout" :loading="checking" @click="logout">Выйти</v-btn>
             <p v-if="sessionError" class="text-error text-body-2 mt-2" role="alert">{{ sessionError }}</p>
         </aside>
-        <main class="admin-workspace">
+        <section class="admin-workspace">
             <div class="workspace-heading">
                 <h1>{{ currentSection.title }}</h1>
                 <p>{{ currentSection.description }}</p>
@@ -23,7 +23,7 @@
             <StereoCalibration v-else-if="tab === 'calibration'" />
             <ChallengeVerification v-else-if="tab === 'challenge'" />
             <AccessHistory v-else-if="tab === 'journal'" />
-        </main>
+        </section>
     </div>
 </template>
 
