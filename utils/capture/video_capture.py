@@ -38,10 +38,29 @@ def detect_faces(frame, cascade=None):
         cascade = _load_face_cascade()
     if cascade is None:
         raise CameraError("Не удалось загрузить детектор лиц")
-    gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+    height, width = frame.shape[:2]
+    # Детекция выполняется на уменьшенном кадре, а распознавание и стерео
+    # продолжают работать с исходным разрешением.
+    if width > 640:
+        detection_height = max(1, round(height * 640 / width))
+        reduced = cv2.resize(frame, (640, detection_height), interpolation=cv2.INTER_AREA)
+    else:
+        reduced = frame
+    gray = cv2.cvtColor(reduced, cv2.COLOR_BGR2GRAY)
     with _cascade_lock:
         faces = cascade.detectMultiScale(gray, 1.3, 5)
-    return [tuple(int(value) for value in face) for face in faces]
+
+    scale_x = width / gray.shape[1]
+    scale_y = height / gray.shape[0]
+    boxes = []
+    for x, y, w, h in faces:
+        left = max(0, min(width, round(x * scale_x)))
+        top = max(0, min(height, round(y * scale_y)))
+        right = max(0, min(width, round((x + w) * scale_x)))
+        bottom = max(0, min(height, round((y + h) * scale_y)))
+        if right > left and bottom > top:
+            boxes.append((left, top, right - left, bottom - top))
+    return boxes
 
 
 def _has_face(frame, cascade):

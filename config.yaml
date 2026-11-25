@@ -183,7 +183,7 @@ authentication:
   session_timeout_seconds: 20.0
   policy_file: "data/security/authentication-policy.json"  # Переопределение из админ-панели
   capture:
-    max_frame_age_seconds: 0.5
-    frame_wait_seconds: 1.0
+    max_frame_age_seconds: 1.0  # Возраст кадра с учётом детекции на Raspberry Pi
+    frame_wait_seconds: 2.0     # Общий лимит ожидания и повторного отбора наблюдения
     max_track_gap_seconds: 2.0
     min_track_overlap: 0.25  # Начальный порог IoU, требует проверки на стенде

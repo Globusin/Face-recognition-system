@@ -11,6 +11,7 @@ from utils.capture.face_detection_preview import face_detection_preview
 from utils.capture.frame_pairing import CameraFrame, FramePair
 from utils.capture.video_capture import detect_faces
 from utils.capture.camera_manager import CameraManager
+from utils.common.logger import log_debug
 
 
 CAPTURE_POLL_SECONDS = 0.1
@@ -82,8 +83,9 @@ class FaceObservationSource:
         age = self.clock() - frame.timestamp_ns / 1e9
         return 0 <= age <= self.max_age
 
-    def _read(self, deadline=None):
-        wait_deadline = self.clock() + self.wait_timeout
+    def _read(self, deadline=None, *, wait_deadline=None):
+        if wait_deadline is None:
+            wait_deadline = self.clock() + self.wait_timeout
         if deadline is not None:
             wait_deadline = min(wait_deadline, deadline)
         while self.clock() < wait_deadline:
@@ -122,32 +124,71 @@ class FaceObservationSource:
         self.check_cancelled(deadline)
         raise CameraUnavailableError('Не получено свежего согласованного наблюдения')
 
+    def _fresh_pair(self, frame, pair):
+        return self._fresh(frame) and (pair is None or self._fresh(pair.secondary))
+
+    def _log_expired(self, frame, pair, stage):
+        now = self.clock()
+        primary_age = (now - frame.timestamp_ns / 1e9) * 1000
+        secondary_age = (None if pair is None else
+                         (now - pair.secondary.timestamp_ns / 1e9) * 1000)
+        log_debug(
+            f'Кадр устарел ({stage}): primary={primary_age:.1f} мс, '
+            f'secondary={secondary_age:.1f} мс, предел={self.max_age * 1000:.1f} мс'
+            if secondary_age is not None else
+            f'Кадр устарел ({stage}): primary={primary_age:.1f} мс, '
+            f'предел={self.max_age * 1000:.1f} мс'
+        )
+
     def next(self, deadline=None, not_before=None):
-        """Детектирует лицо один раз и продолжает только непрерывный трек"""
-        frame, pair = self._read(deadline)
-        while not_before is not None and frame.timestamp_ns / 1e9 < not_before:
-            frame, pair = self._read(deadline)
-        faces = self.detector(frame.image)
-        face_detection_preview.record(frame, faces, 'TRACK' if self.current else 'SEARCH')
-        self.check_cancelled(deadline)
-        if not self._fresh(frame) or (pair is not None and not self._fresh(pair.secondary)):
-            raise ObservationRejected('observation_expired')
-        if len(faces) != 1:
+        """Отбирает свежее наблюдение, не продлевая лимит ожидания и трека"""
+        wait_deadline = self.clock() + self.wait_timeout
+        expired = False
+        while True:
+            self.check_cancelled(deadline)
+            if expired and self.clock() >= wait_deadline:
+                raise ObservationRejected('observation_expired')
+            try:
+                frame, pair = self._read(deadline, wait_deadline=wait_deadline)
+                while not_before is not None and frame.timestamp_ns / 1e9 < not_before:
+                    frame, pair = self._read(deadline, wait_deadline=wait_deadline)
+            except CameraUnavailableError:
+                if expired:
+                    raise ObservationRejected('observation_expired') from None
+                raise
+
+            faces = self.detector(frame.image)
+            face_detection_preview.record(frame, faces, 'TRACK' if self.current else 'SEARCH')
+            self.check_cancelled(deadline)
+            fresh = self._fresh_pair(frame, pair)
+            if not fresh:
+                self._log_expired(frame, pair, 'после детекции')
+                # При поиске лица Monitor и так начинает поиск заново.
+                if self.current is None:
+                    raise ObservationRejected('observation_expired')
+
+            if len(faces) != 1:
+                if self.current is not None:
+                    raise ObservationRejected('face_lost' if not faces else 'multiple_faces')
+                return None
+            face_box = faces[0]
+            track_id = uuid4().hex
             if self.current is not None:
-                raise ObservationRejected('face_lost' if not faces else 'multiple_faces')
-            return None
-        face_box = faces[0]
-        track_id = uuid4().hex
-        if self.current is not None:
-            previous = self.current
-            gap = (frame.timestamp_ns - previous.primary.timestamp_ns) / 1e9
-            if gap <= 0 or gap > self.max_gap:
-                raise ObservationRejected('track_gap')
-            if box_overlap(previous.face_box, face_box) < self.min_overlap:
-                raise ObservationRejected('track_changed')
-            track_id = previous.track_id
-        self.current = FaceObservation(frame, face_box, track_id, pair)
-        return self.current
+                previous = self.current
+                gap = (frame.timestamp_ns - previous.primary.timestamp_ns) / 1e9
+                if gap <= 0 or gap > self.max_gap:
+                    raise ObservationRejected('track_gap')
+                if box_overlap(previous.face_box, face_box) < self.min_overlap:
+                    raise ObservationRejected('track_changed')
+                track_id = previous.track_id
+
+            if not fresh:
+                # Не засчитываем устаревший кадр и не обновляем опорный трек.
+                # Повторяем захват в пределах исходного лимита ожидания.
+                expired = True
+                continue
+            self.current = FaceObservation(frame, face_box, track_id, pair)
+            return self.current
 
     def wait_for_face(self, on_wait=None):
         """Ожидает единственное лицо с возможностью отмены"""
@@ -172,8 +213,12 @@ class FaceObservationSource:
                     continue
             captured_at = observation.primary.timestamp_ns / 1e9
             if last_used_at is None or captured_at - last_used_at >= frame_delay:
-                if not self._fresh(observation.primary):
-                    raise ObservationRejected('observation_expired')
+                if not self._fresh_pair(observation.primary, observation.pair):
+                    self._log_expired(observation.primary, observation.pair, 'перед распознаванием')
+                    # Сохраняем опорный трек, но не передаём старый кадр модели.
+                    # Следующее наблюдение должно пройти обычные проверки трека.
+                    observation = None
+                    continue
                 yield observation
                 accepted += 1
                 last_used_at = captured_at
