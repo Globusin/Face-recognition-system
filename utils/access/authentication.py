@@ -241,9 +241,18 @@ class AuthenticationEngine:
                     if not isinstance(result, CheckResult):
                         raise ValueError('Некорректный результат проверки')
                     self.session.checks[name] = result
-                    if result.status != CheckStatus.PASS:
-                        self.cancel(result.reason or f'{name}_not_passed')
-                        return
+                    if result.status == CheckStatus.PASS:
+                        continue
+                    # Только явно необязательная стереопроверка может
+                    # завершиться SKIPPED. Это не PASS: результат остаётся
+                    # в checks, а Challenge и итоговая политика проверяются далее.
+                    if (name == 'stereo'
+                            and result.status == CheckStatus.SKIPPED
+                            and getattr(self.policy, 'stereo_mode', None) == 'advisory'
+                            and (self.session.diagnostics.get('stereo') or {}).get('decision') != 'SPOOF'):
+                        continue
+                    self.cancel(result.reason or f'{name}_not_passed')
+                    return
             # Повторная проверка личности после пропуска Haar может быть долгой.
             # Выполняем её до взятия блокировок автомата и замка.
             if pre_grant is not None:
