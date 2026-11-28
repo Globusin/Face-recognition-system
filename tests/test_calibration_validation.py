@@ -9,7 +9,7 @@ from unittest.mock import patch
 
 import numpy as np
 
-from utils.stereo_calibration import CalibrationSession, calibration_fingerprint, load_calibration, write_json
+from utils.stereo.stereo_calibration import CalibrationSession, calibration_fingerprint, load_calibration, write_json
 
 
 class CalibrationValidationTests(unittest.TestCase):
@@ -38,8 +38,8 @@ class CalibrationValidationTests(unittest.TestCase):
         self.session.signature, self.session.image_size = self.cameras, (160, 120)
         for patcher in (patch.object(self.session, '_root', return_value=self.root),
                         patch.object(self.session, '_camera_signature', return_value=self.cameras),
-                        patch('utils.stereo_calibration.get_camera_manager'),
-                        patch('utils.stereo_calibration.load_config', return_value={})):
+                        patch('utils.stereo.stereo_calibration.get_camera_manager'),
+                        patch('utils.stereo.stereo_calibration.load_config', return_value={})):
             patcher.start()
             self.addCleanup(patcher.stop)
 
@@ -50,7 +50,7 @@ class CalibrationValidationTests(unittest.TestCase):
             corners={'primary': corners, 'secondary': corners.copy()})
         geometry = dict(mean_error_percent=error_percent, vertical_max_px=1.0, plane_rms_mm=0.5,
                         mean_error_mm=0.1, max_error_mm=0.3)
-        with patch('utils.stereo_calibration.measure_board_geometry', return_value=geometry):
+        with patch('utils.stereo.stereo_calibration.measure_board_geometry', return_value=geometry):
             return self.session.verify_observation(self.session.session_id, f'{number:032x}',
                                                    self.calibration_id, True, True)
 
@@ -120,7 +120,7 @@ class CalibrationValidationTests(unittest.TestCase):
                 self.session.validate(self.session.session_id, self.calibration_id, mounting, reviewed)
 
     def test_face_cannot_opt_into_unvalidated_diagnostic_loading(self):
-        with patch('utils.two_view_pad.inspect_pair') as inspect:
+        with patch('utils.stereo.two_view_pad.inspect_pair') as inspect:
             with self.assertRaisesRegex(ValueError, 'не подтверждена'):
                 self.session.measure_face(self.session.session_id, self.calibration_id,
                                           True, True, 'live', 'daylight', 65)
@@ -134,7 +134,7 @@ class CalibrationValidationTests(unittest.TestCase):
             fingerprint = calibration_fingerprint(folder, metadata, parameter_bytes)
             (self.folder / 'parameters.npz').write_bytes(b'not-an-archive')
             return fingerprint
-        with patch('utils.stereo_calibration.calibration_fingerprint', side_effect=replace_after_hash):
+        with patch('utils.stereo.stereo_calibration.calibration_fingerprint', side_effect=replace_after_hash):
             _, arrays = load_calibration(self.folder, self.cameras, mounting_confirmed=True)
             self.assertEqual(arrays['Q'].shape, (4, 4))
         with self.assertRaises(ValueError):

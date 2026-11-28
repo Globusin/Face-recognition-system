@@ -5,7 +5,7 @@ import time
 import unittest
 from unittest.mock import Mock, patch
 
-from utils.display import TFTDisplay, DisplayState
+from utils.device.display import TFTDisplay, DisplayState
 
 
 class DisplayTests(unittest.TestCase):
@@ -52,7 +52,7 @@ class DisplayTests(unittest.TestCase):
         driver = Mock(width=128, height=160)
         display = TFTDisplay(driver)
         driver.image.side_effect = OSError('SPI недоступен')
-        with patch('utils.display.log_error') as log:
+        with patch('utils.device.display.log_error') as log:
             with self.assertRaises(OSError):
                 display.show_state(DisplayState.CHALLENGE)
         self.assertIn('SPI недоступен', log.call_args.args[0])

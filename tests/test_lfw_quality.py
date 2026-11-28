@@ -8,8 +8,8 @@ import cv2
 # Добавляем путь к utils
 sys.path.append(str(Path(__file__).parent.parent))
 
-from utils.recognition import get_embeddings_from_image, save_embedding, check_for_similar_embeddings_in_db
-from utils.logger import log_debug
+from utils.face.recognition import get_embeddings_from_image, save_embedding, check_for_similar_embeddings_in_db
+from utils.common.logger import log_debug
 
 
 def test_recognition(images_path):

@@ -8,7 +8,8 @@ from unittest.mock import patch
 import numpy as np
 
 from src.app import app
-from utils.api_security import FramePreviewLimiter
+from utils.capture import camera_manager
+from utils.access.api_security import FramePreviewLimiter
 
 
 class CameraFrameAccessTests(unittest.TestCase):
@@ -20,7 +21,7 @@ class CameraFrameAccessTests(unittest.TestCase):
         self.requested.set()
         for patcher in (
             patch.dict('os.environ', {'CALIBRATION_ADMIN_TOKEN': self.headers['X-Admin-Token']}),
-            patch('utils.api_security.load_config', return_value={}),
+            patch('utils.access.api_security.load_config', return_value={}),
             patch('src.app.calibration_session', self.mode),
             patch('src.app.maintenance', SimpleNamespace(requested=self.requested)),
             patch('src.app.frame_preview_limit', FramePreviewLimiter()),
@@ -56,7 +57,7 @@ class CameraFrameAccessTests(unittest.TestCase):
             self.manager.assert_not_called()
 
     def test_shared_limit_across_roles_and_query_strings(self):
-        with patch('utils.api_security.time.monotonic', return_value=100), \
+        with patch('utils.access.api_security.time.monotonic', return_value=100), \
                 patch('src.app.frame_preview_limit', FramePreviewLimiter()):
             for role in ('primary', 'secondary'):
                 response = self.frame(role)
@@ -77,7 +78,7 @@ class CameraFrameAccessTests(unittest.TestCase):
         self.assertEqual(self.manager.return_value.get_latest_frame.call_count, 1)
 
     def test_budget_refills_and_parallel_calls_are_bounded(self):
-        with patch('utils.api_security.time.monotonic', return_value=100):
+        with patch('utils.access.api_security.time.monotonic', return_value=100):
             limiter = FramePreviewLimiter()
             results = []
             threads = [threading.Thread(target=lambda: results.append(limiter.retry_after())) for _ in range(12)]
@@ -86,7 +87,7 @@ class CameraFrameAccessTests(unittest.TestCase):
             for thread in threads:
                 thread.join()
             self.assertEqual(results.count(0), 2)
-        with patch('utils.api_security.time.monotonic', return_value=100.5):
+        with patch('utils.access.api_security.time.monotonic', return_value=100.5):
             self.assertEqual(limiter.retry_after(), 0)
             self.assertGreater(limiter.retry_after(), 0)
 
@@ -106,6 +107,36 @@ class CameraFrameAccessTests(unittest.TestCase):
         finally:
             release.set()
             worker.join()
+
+    def test_live_preview_allowed_without_maintenance(self):
+        self.mode.active = False
+        self.requested.clear()
+        with patch('utils.access.api_security.load_config',
+                   return_value={'security': {'live_preview_enabled': True}}):
+            self.assertEqual(self.frame().status_code, 200)
+        self.manager.return_value.get_latest_frame.assert_called_once()
+
+    def test_status_reports_live_preview_flag(self):
+        self.mode.active = False
+        self.requested.clear()
+        with patch('src.app.get_public_camera_status',
+                   return_value={'live_preview_enabled': True}):
+            payload = self.client.get(
+                '/api/cameras/status', headers=self.headers,
+            ).json
+        self.assertTrue(payload['live_preview_enabled'])
+        self.assertTrue(payload['preview_available'])
+
+    def test_public_camera_status_reads_live_preview_flag(self):
+        self.manager.get_status.return_value = {
+            'started': True, 'cameras': {}, 'pairing': {},
+        }
+        with patch('utils.capture.camera_manager.get_camera_manager',
+                   return_value=self.manager), \
+                patch('utils.capture.camera_manager.load_config',
+                      return_value={'security': {'live_preview_enabled': True}}):
+            status = camera_manager.get_public_camera_status()
+        self.assertTrue(status['live_preview_enabled'])
 
     def test_status_reports_availability_without_opening_cameras(self):
         with patch('src.app.get_public_camera_status', return_value={}):

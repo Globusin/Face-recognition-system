@@ -5,13 +5,13 @@ from datetime import timedelta
 from unittest.mock import patch
 
 from src.app import app
-from utils.api_security import _failures
+from utils.access.api_security import _failures
 
 
 class ApiSecurityTests(unittest.TestCase):
     def setUp(self):
         self.config = {'security': {'admin_networks': ['127.0.0.1/32', '::1/128']}}
-        self.settings = patch('utils.api_security.load_config', side_effect=lambda: self.config)
+        self.settings = patch('utils.access.api_security.load_config', side_effect=lambda: self.config)
         self.settings.start()
         self.addCleanup(self.settings.stop)
         self.secret = patch.dict('os.environ', {'CALIBRATION_ADMIN_TOKEN': 'test-' + 'a' * 40})

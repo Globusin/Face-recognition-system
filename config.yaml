@@ -31,6 +31,7 @@ server:
 security:
   admin_token_file: "data/security/admin-token"
   admin_networks: ["127.0.0.1/32", "::1/128"]  # Добавьте только адрес компьютера администратора
+  live_preview_enabled: true  # Администратор может включить предпросмотр камер
 
 stereo_calibration:
   timing_fast_board: true  # Быстрый поиск только в тесте времени
@@ -56,6 +57,28 @@ stereo_pad:
   min_depth_mm: 150.0
   max_depth_mm: 2000.0
 
+# Диагностическая проверка объёма лица по двум камерам
+# Пороги предварительные: результат не участвует в разрешении доступа
+stereo_liveness:
+  mode: advisory             # off | advisory | required
+  parallel: false            # замер во время распознавания; включение после профилирования
+  result_timeout_s: 1.5      # ожидание результата рабочего потока при required
+  calibration_id: null       # Каталог в stereo_calibration.output_dir
+  mounting_confirmed: false  # Требуется для загрузки сохранённой калибровки
+  dense_depth: false         # StereoSGBM тяжелее, включать вручную
+  classifier:
+    min_points: 25
+    max_reprojection_px: 4.0
+    max_vertical_px: 8.0
+    flat_plane_rms_mm: 1.5   # Ниже этого рельеф считается плоским
+    flat_nose_eye_mm: 1.0
+    live_plane_rms_mm: 2.0   # Выше этого рельеф похож на объёмное лицо
+    live_nose_eye_mm: 3.0
+    max_plane_rms_mm: 12.0   # Слишком большой рельеф не считается лицом
+    max_nose_eye_mm: 22.0
+    min_valid_fraction: 0.25
+    min_valid_pixels: 100
+
 # Параметры сохранения изображений
 image:
   output_dir: "data"
@@ -79,6 +102,10 @@ similarity: 0.15  # Порог схожести (чем меньше, тем с�
 
 challenge_response:
   # Эксперимент, не включён в разрешение доступа
+  policy: disabled           # disabled | adaptive | always
+  # adaptive: LIVE — без задания; UNKNOWN или нет стереоданных — задание;
+  # SPOOF — отказ (пороги предварительные, возможны ложные отказы)
+  pipeline_count: 1          # Заданий в рабочем конвейере, чтобы уложиться в тайм-аут
   count: 3
   baseline_seconds: 0.6
   baseline_timeout: 12.0
@@ -96,23 +123,42 @@ recognition_optimization:
 
 # Решение о доступе по нескольким кадрам
 multi_frame_recognition:
-  frames_count: 5           # Сколько кадров анализировать за одну попытку
-  min_successful_frames: 3  # Сколько кадров должны распознать одного пользователя
-  frame_delay: 0.15         # Пауза между кадрами, сек.
-  max_distance_std: 0.05    # Максимальная нестабильность дистанции по успешным кадрам
+  mode: adaptive            # adaptive: остановка по свидетельствам, fixed: ровно frames_count кадров
+  frames_count: 5           # Сколько кадров анализировать за попытку (только fixed)
+  min_successful_frames: 3  # Сколько кадров должны распознать одного пользователя (только fixed)
+  frame_delay: 0.15         # Пауза между кадрами, сек. (только fixed)
+  max_distance_std: 0.05    # Максимальная нестабильность дистанции по успешным кадрам (fixed)
 
-# Байесовское накопление уверенности по серии кадров
+# Адаптивное накопление свидетельств идентичности (режим adaptive)
+# Значения предварительные, требуют калибровки на размеченной выборке
+adaptive_recognition:
+  min_frames: 3              # Минимум обработанных качественных кадров
+  max_frames: 7              # Максимум кадров на попытку
+  min_successful_frames: 3   # Минимум совпадений с одним пользователем
+  frame_interval_ms: 200     # Минимальный интервал между выбранными кадрами
+  early_stop_threshold: 0.98 # Порог досрочного завершения при достаточных свидетельствах
+  max_attempt_duration_s: 8.0  # Лимит накопления свидетельств на Raspberry Pi
+  max_distance_std: 0.05     # Пока оставлен существующий порог стабильности
+
+# Накопление свидетельств идентичности
 bayesian_scoring:
   enabled: true
-  prior_probability: 0.2      # Начальная вероятность, что кадры принадлежат конкретному пользователю
-  decision_threshold: 0.95    # Минимальная итоговая вероятность для допуска
+  prior_probability: 0.2      # Начальное отношение правдоподобий для конкретного пользователя
+  decision_threshold: 0.98    # Порог score для допуска: это не вероятность
   distance_sigma: 0.08        # Чем меньше значение, тем сильнее штрафуются большие дистанции
   unknown_likelihood: 0.05    # Вероятность похожего кадра при гипотезе "это не этот пользователь"
   miss_likelihood_ratio: 0.4  # Штраф за кадр, который поддержал другого пользователя
+  # Соседние кадры одной камеры коррелированы, поэтому второй и последующие
+  # кадры дают лишь часть свидетельства первого
+  correlation_discount: 0.4
+
+# Журнал доступов и отказов в PostgreSQL: без изображений и embeddings
+audit:
+  enabled: true
 
 # Параметры работы системы
 detection_interval: 2  # Интервал в секундах между попытками распознавания
-door_open_time: 5      # Время в секундах, на которое открывается дверь после успешного распознавания
+door_open_time: 2      # Время в секундах, на которое открывается дверь после успешного распознавания
 
 # Параметры TFT дисплея
 display:
@@ -130,3 +176,16 @@ display:
 logging:
   level: "INFO"  # Уровень логирования: DEBUG, INFO, WARNING, ERROR
   file: "logs/app.log"  # Путь к файлу логов
+
+# Лимит сессии, включая распознавание и задания. При включённой политике
+# заданий baseline_timeout и action_timeout должны в него укладываться.
+authentication:
+  session_timeout_seconds: 20.0
+  policy_file: "data/security/authentication-policy.json"  # Переопределение из админ-панели
+  capture:
+    max_frame_age_seconds: 1.0  # Возраст кадра с учётом детекции на Raspberry Pi
+    frame_wait_seconds: 2.0     # Общий лимит ожидания и повторного отбора наблюдения
+    max_track_gap_seconds: 2.0  # Максимальный разрыв наблюдений, не вычислений dlib
+    tracking_interval_seconds: 0.15  # Минимальный интервал запуска Haar в потоке сопровождения
+    tracking_missing_grace_seconds: 1.0  # Допуск пропуска Haar; до восстановления доступ запрещён
+    min_track_overlap: 0.25  # Начальный порог IoU, требует проверки на стенде

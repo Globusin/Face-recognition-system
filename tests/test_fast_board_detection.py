@@ -6,7 +6,7 @@ from unittest.mock import patch
 import cv2
 import numpy as np
 
-from utils.stereo_calibration import find_board
+from utils.stereo.stereo_calibration import find_board
 
 
 class FastBoardDetectionTests(unittest.TestCase):
@@ -14,8 +14,8 @@ class FastBoardDetectionTests(unittest.TestCase):
         image = np.zeros((721, 1280, 3), dtype=np.uint8)
         candidates = np.full((49, 1, 2), [100, 100], dtype=np.float32)
         durations = {}
-        with patch('utils.stereo_calibration.cv2.findChessboardCorners', return_value=(True, candidates)) as search, \
-                patch('utils.stereo_calibration.cv2.cornerSubPix', side_effect=lambda gray, points, *args: points) as refine:
+        with patch('utils.stereo.stereo_calibration.cv2.findChessboardCorners', return_value=(True, candidates)) as search, \
+                patch('utils.stereo.stereo_calibration.cv2.cornerSubPix', side_effect=lambda gray, points, *args: points) as refine:
             result = find_board(image, max_search_width=640, durations=durations)
         self.assertEqual(search.call_args.args[0].shape, (360, 640))
         self.assertEqual(refine.call_args.args[0].shape, (721, 1280))
@@ -26,8 +26,8 @@ class FastBoardDetectionTests(unittest.TestCase):
         image = np.zeros((720, 1280, 3), dtype=np.uint8)
         candidates = np.arange(98, dtype=np.float32).reshape(49, 1, 2)
         durations = {}
-        with patch('utils.stereo_calibration.cv2.findChessboardCorners', side_effect=[(False, None), (True, candidates)]) as search, \
-                patch('utils.stereo_calibration.cv2.cornerSubPix', side_effect=lambda gray, points, *args: points):
+        with patch('utils.stereo.stereo_calibration.cv2.findChessboardCorners', side_effect=[(False, None), (True, candidates)]) as search, \
+                patch('utils.stereo.stereo_calibration.cv2.cornerSubPix', side_effect=lambda gray, points, *args: points):
             result = find_board(image, 1, max_search_width=640, durations=durations)
         self.assertEqual([call.args[0].shape for call in search.call_args_list], [(360, 640), (720, 1280)])
         np.testing.assert_array_equal(result, np.rot90(candidates.reshape(7, 7, 2), 1).reshape(49, 1, 2))
@@ -35,15 +35,15 @@ class FastBoardDetectionTests(unittest.TestCase):
 
     def test_missing_board_and_small_image(self):
         image = np.zeros((100, 200, 3), dtype=np.uint8)
-        with patch('utils.stereo_calibration.cv2.findChessboardCorners', return_value=(False, None)) as search, \
-                patch('utils.stereo_calibration.cv2.cornerSubPix') as refine:
+        with patch('utils.stereo.stereo_calibration.cv2.findChessboardCorners', return_value=(False, None)) as search, \
+                patch('utils.stereo.stereo_calibration.cv2.cornerSubPix') as refine:
             self.assertIsNone(find_board(image, max_search_width=640))
         self.assertEqual(search.call_count, 1)
         refine.assert_not_called()
 
     def test_disabled_fast_path_keeps_full_search(self):
         image = np.zeros((720, 1280, 3), dtype=np.uint8)
-        with patch('utils.stereo_calibration.cv2.findChessboardCorners', return_value=(False, None)) as search:
+        with patch('utils.stereo.stereo_calibration.cv2.findChessboardCorners', return_value=(False, None)) as search:
             self.assertIsNone(find_board(image))
         self.assertEqual(search.call_count, 1)
         self.assertEqual(search.call_args.args[0].shape, (720, 1280))

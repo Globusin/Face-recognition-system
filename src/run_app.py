@@ -10,12 +10,12 @@ from pathlib import Path
 sys.path.append(str(Path(__file__).parent.parent))
 
 from src.app import app
-from utils.hotspot import start_hotspot
-from utils.config_loader import load_config
-from utils.logger import log_info, log_error
-from utils.camera_manager import stop_camera_manager
+from utils.device.hotspot import start_hotspot
+from utils.common.config_loader import load_config
+from utils.common.logger import log_info, log_error
+from utils.capture.camera_manager import stop_camera_manager
 from src.monitor import run_monitoring
-from utils.challenge_session import challenge_session
+from utils.challenge.challenge_session import challenge_session
 
 monitor_stop_event = threading.Event()
 monitor_thread = None

@@ -1,0 +1,476 @@
+import sys
+
+import psycopg
+import numpy as np
+from psycopg.types.json import Jsonb
+from contextlib import ExitStack, contextmanager
+from contextvars import ContextVar
+
+from utils.common.config_loader import load_config
+from utils.common.logger import log_info, log_debug, log_error
+from utils.common.timing import measure_time
+
+_recognition_session = ContextVar('recognition_db_session', default=None)
+
+
+@contextmanager
+def recognition_db_session():
+    """Ограничивает время жизни соединения одной попыткой распознавания"""
+    if _recognition_session.get() is not None:
+        yield
+        return
+
+    with ExitStack() as resources:
+        session = {'connection': None, 'resources': resources}
+        token = _recognition_session.set(session)
+        try:
+            yield
+        finally:
+            _recognition_session.reset(token)
+
+
+@contextmanager
+def _lookup_connection():
+    session = _recognition_session.get()
+    if session is None:
+        # Отдельный поиск вне серии по-прежнему сам закрывает соединение
+        with create_connection() as connection:
+            yield connection
+        return
+
+    if session['connection'] is None:
+        # Соединение нужно только при первом реальном запросе
+        session['connection'] = session['resources'].enter_context(create_connection())
+    yield session['connection']
+
+
+@measure_time("БД: открытие соединения")
+def create_connection():
+    config = load_config()
+    db_config = config.get('database', {})
+    
+    host = db_config.get('host', 'localhost')
+    port = db_config.get('port', 5433)
+    dbname = db_config.get('name', 'face-recognition')
+    user = db_config.get('user', 'postgres')
+    password = db_config.get('password', 'fID3P8zg')
+    
+    connection_string = f"host={host} port={port} dbname={dbname} user={user} password={password}"
+    return psycopg.connect(connection_string, connect_timeout=5)
+
+def initialize_pgvector():
+    """Устанавливает расширение pgvector в базе данных"""
+    with create_connection() as conn:
+        with conn.cursor() as cur:
+            # Устанавливаем расширение pgvector
+            cur.execute("CREATE EXTENSION IF NOT EXISTS vector;")
+            conn.commit()
+            log_debug("Расширение pgvector установлено")
+
+def create_embeddings_tables():
+    initialize_pgvector()
+    
+    create_embeddings_table()
+    create_users_table()
+    create_users_to_embeddings_table()
+    create_access_audit_table()
+
+def create_embeddings_table():
+    with create_connection() as conn:
+        with conn.cursor() as cur:
+            # Проверяем, существует ли таблица
+            cur.execute("""
+                SELECT EXISTS (
+                    SELECT FROM information_schema.tables 
+                    WHERE table_name = 'embeddings'
+                );
+            """)
+            
+            table_exists = cur.fetchone()[0]
+            
+            if table_exists:
+                log_debug("Таблица embeddings уже существует")
+                return
+            
+            cur.execute("""
+                CREATE TABLE embeddings (
+                    id SERIAL PRIMARY KEY,
+                    embedding vector(128),
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                );
+            """)
+            
+            conn.commit()
+            log_debug("Таблица embeddings")
+
+def create_users_table():
+    with create_connection() as conn:
+        with conn.cursor() as cur:
+            # Проверяем, существует ли таблица
+            cur.execute("""
+                SELECT EXISTS (
+                    SELECT FROM information_schema.tables 
+                    WHERE table_name = 'users'
+                );
+            """)
+            
+            table_exists = cur.fetchone()[0]
+            
+            if table_exists:
+                log_debug("Таблица users уже существует")
+                return
+            
+            cur.execute("""
+                CREATE TABLE users (
+                    id SERIAL PRIMARY KEY,
+                    username VARCHAR(255),
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                );
+            """)
+            
+            conn.commit()
+            log_debug("Таблица users успешно создана")
+
+
+def create_users_to_embeddings_table():
+    with create_connection() as conn:
+        with conn.cursor() as cur:
+            # Проверяем, существует ли таблица
+            cur.execute("""
+                SELECT EXISTS (
+                    SELECT FROM information_schema.tables 
+                    WHERE table_name = 'users_to_embeddings'
+                );
+            """)
+            
+            table_exists = cur.fetchone()[0]
+            
+            if table_exists:
+                log_debug("Таблица users_to_embeddings уже существует")
+                return
+            
+            cur.execute("""
+                CREATE TABLE users_to_embeddings (
+                    id SERIAL PRIMARY KEY,
+                    user_id INTEGER NOT NULL,
+                    embedding_id INTEGER NOT NULL,
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    FOREIGN KEY (user_id) REFERENCES users (id)
+                );
+            """)
+            
+            conn.commit()
+            log_debug("Таблица users_to_embeddings успешно создана")
+
+
+def create_access_audit_table():
+    """Журнал решений: без изображений и embeddings, только итог попытки"""
+    with create_connection() as conn:
+        with conn.cursor() as cur:
+            cur.execute("""
+                SELECT EXISTS (
+                    SELECT FROM information_schema.tables
+                    WHERE table_name = 'access_audit'
+                );
+            """)
+
+            table_exists = cur.fetchone()[0]
+
+            if table_exists:
+                log_debug("Таблица access_audit уже существует")
+                return
+
+            cur.execute("""
+                CREATE TABLE access_audit (
+                    id BIGSERIAL PRIMARY KEY,
+                    created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+                    type TEXT NOT NULL DEFAULT 'session'
+                        CHECK (type IN ('session', 'policy')),
+                    session_id TEXT,
+                    decision TEXT CHECK (decision IS NULL
+                        OR decision IN ('GRANTED', 'DENIED', 'ERROR')),
+                    reason TEXT NOT NULL DEFAULT '',
+                    user_id INTEGER REFERENCES users (id) ON DELETE SET NULL,
+                    distance DOUBLE PRECISION,
+                    checks JSONB NOT NULL DEFAULT '{}'::jsonb,
+                    stereo_decision TEXT,
+                    stereo_reason TEXT,
+                    duration_seconds DOUBLE PRECISION,
+                    unlock_attempted BOOLEAN NOT NULL DEFAULT FALSE,
+                    details JSONB
+                );
+            """)
+            cur.execute("""
+                CREATE INDEX IF NOT EXISTS access_audit_created_idx
+                ON access_audit (created_at DESC);
+            """)
+            cur.execute("""
+                CREATE INDEX IF NOT EXISTS access_audit_decision_idx
+                ON access_audit (type, decision, created_at DESC);
+            """)
+
+            conn.commit()
+            log_debug("Таблица access_audit успешно создана")
+
+
+def add_audit_record(record):
+    """Добавляет обезличенный итог попытки или изменение политики"""
+    details = record.get('details')
+    with create_connection() as conn:
+        with conn.cursor() as cur:
+            cur.execute("""
+                INSERT INTO access_audit
+                    (created_at, type, session_id, decision, reason, user_id,
+                     distance, checks, stereo_decision, stereo_reason,
+                     duration_seconds, unlock_attempted, details)
+                VALUES (COALESCE(%s::timestamptz, now()), %s, %s, %s, %s, %s,
+                        %s, %s, %s, %s, %s, %s, %s)
+            """, (
+                record.get('timestamp'), record.get('type', 'session'),
+                record.get('session_id'), record.get('decision'),
+                record.get('reason', ''), record.get('user_id'),
+                record.get('distance'), Jsonb(record.get('checks') or {}),
+                record.get('stereo_decision'), record.get('stereo_reason'),
+                record.get('duration_seconds'),
+                bool(record.get('unlock_attempted', False)),
+                Jsonb(details) if details is not None else None,
+            ))
+            conn.commit()
+
+
+def get_audit_records(limit=50, decision=None, kind=None):
+    """Последние записи журнала для административной панели"""
+    limit = min(max(int(limit), 1), 500)
+    conditions = []
+    parameters = []
+    if kind:
+        conditions.append('type = %s')
+        parameters.append(kind)
+    if decision:
+        conditions.append('decision = %s')
+        parameters.append(decision)
+    where = f"WHERE {' AND '.join(conditions)}" if conditions else ''
+    with create_connection() as conn:
+        with conn.cursor() as cur:
+            cur.execute(f"""
+                SELECT created_at, type, session_id, decision, reason, user_id,
+                       distance, checks, stereo_decision, stereo_reason,
+                       duration_seconds, unlock_attempted, details
+                FROM access_audit
+                {where}
+                ORDER BY id DESC
+                LIMIT %s
+            """, (*parameters, limit))
+            rows = cur.fetchall()
+    records = []
+    for row in rows:
+        created_at = row[0]
+        records.append({
+            'timestamp': (
+                created_at.isoformat() if hasattr(created_at, 'isoformat')
+                else created_at
+            ),
+            'type': row[1],
+            'session_id': row[2],
+            'decision': row[3],
+            'reason': row[4] or '',
+            'user_id': row[5],
+            'distance': row[6],
+            'checks': row[7] or {},
+            'stereo_decision': row[8],
+            'stereo_reason': row[9],
+            'duration_seconds': row[10],
+            'unlock_attempted': row[11],
+            'details': row[12],
+        })
+    return records
+
+
+def add_user_embedding(embedding):
+    with create_connection() as conn:
+        with conn.cursor() as cur:
+            embedding_str = embedding_to_string(embedding)
+            
+            cur.execute("""
+                INSERT INTO embeddings (embedding)
+                VALUES (%s)
+                RETURNING id
+            """, (embedding_str,))
+            
+            user_id = cur.fetchone()[0]
+            conn.commit()
+            log_info(f"Эмбэддинг успешно добавлен с ID: {user_id}")
+            return user_id
+
+def save_user_with_embedding(username: str, embedding_id: int):
+    with create_connection() as conn:
+        with conn.cursor() as cur:
+            try:
+                # Вставляем или игнорируем, если пользователь уже существует
+                cur.execute("""
+                    INSERT INTO users (username)
+                    VALUES (%s)
+                    RETURNING id;
+                """, (username,))
+                
+                result = cur.fetchone()
+                if result:
+                    user_id = result[0]
+                else:
+                    return
+                
+                # Добавляем запись в users_to_embeddings
+                cur.execute("""
+                    INSERT INTO users_to_embeddings (user_id, embedding_id)
+                    VALUES (%s, %s)
+                    ON CONFLICT DO NOTHING;
+                """, (user_id, embedding_id))
+                
+                conn.commit()
+                log_debug(f"Пользователь {user_id} успешно связан с эмбеддингом {embedding_id}")
+                
+            except Exception as e:
+                conn.rollback()
+                log_error(f"Ошибка при сохранении пользователя с эмбеддингом: {e}")
+                raise
+
+
+def find_nearest_user(target_embedding):
+    """Находит ближайший шаблон зарегистрированного пользователя одним запросом"""
+    with _lookup_connection() as conn:
+        with conn.cursor() as cur, measure_time("SQL: ближайший пользователь и расстояние"):
+            cur.execute("""
+                SELECT u.id, e.embedding <=> %s AS distance
+                FROM embeddings e
+                JOIN users_to_embeddings ute ON ute.embedding_id = e.id
+                JOIN users u ON u.id = ute.user_id
+                ORDER BY distance
+                LIMIT 1
+            """, (embedding_to_string(target_embedding),))
+            result = cur.fetchone()
+            return result if result is not None else (None, None)
+
+
+def find_similar_embeddings(target_embedding, limit=1):
+    """Находит наиболее похожие эмбэддинги в базе данных"""
+    with create_connection() as conn:
+        with conn.cursor() as cur, measure_time("SQL: поиск ближайших эмбеддингов"):
+            target_embedding_str = embedding_to_string(target_embedding)
+            
+            cur.execute("""
+                SELECT id, embedding <=> %s AS distance
+                FROM embeddings
+                ORDER BY distance
+                LIMIT %s
+            """, (target_embedding_str, limit))
+            
+            return cur.fetchall()
+
+def embedding_to_string(embedding):
+    """Преобразуем целевой эмбэддинг в строку"""
+    return '[' + ','.join(map(str, embedding)) + ']' if isinstance(embedding, (list, np.ndarray)) else str(embedding)
+
+def get_all_users():
+    """Возвращает всех пользователей из базы данных"""
+    with create_connection() as conn:
+        with conn.cursor() as cur:
+            cur.execute("""
+                SELECT u.id, u.username, u.created_at
+                FROM users u
+                ORDER BY u.id
+            """)
+            users = cur.fetchall()
+            
+            # Преобразуем результаты в список словарей
+            result = []
+            for user in users:
+                result.append({
+                    'id': user[0],
+                    'name': user[1],
+                    'date_registered': user[2].strftime('%Y-%m-%d') if user[2] else None
+                })
+            
+            return result
+
+def get_user_by_embedding_id(embedding_id: int):
+    """Получает пользователя по embedding_id"""
+    with create_connection() as conn:
+        with conn.cursor() as cur, measure_time("SQL: пользователь по эмбеддингу"):
+            cur.execute("""
+                SELECT u.id, u.username, u.created_at
+                FROM users u
+                JOIN users_to_embeddings ute ON u.id = ute.user_id
+                WHERE ute.embedding_id = %s
+            """, (embedding_id,))
+            
+            result = cur.fetchone()
+            
+            if result is None:
+                log_debug(f"Пользователь для embedding_id={embedding_id} не найден.")
+                return None
+            
+            return {
+                'id': result[0],
+                'name': result[1],
+                'date_registered': result[2].strftime('%Y-%m-%d') if result[2] else None
+            }
+
+def delete_user_by_id(user_id: int):
+    """Удаляет пользователя по ID, включая связанные эмбэддинги"""
+    with create_connection() as conn:
+        with conn.cursor() as cur:
+            try:
+                # Сначала получаем все идентификаторы эмбеддингов, связанных с пользователем
+                cur.execute("""
+                    SELECT embedding_id FROM users_to_embeddings
+                    WHERE user_id = %s
+                """, (user_id,))
+                
+                embedding_ids = cur.fetchall()
+                
+                if embedding_ids:
+                    # Удаляем записи из users_to_embeddings
+                    cur.execute("""
+                        DELETE FROM users_to_embeddings
+                        WHERE user_id = %s
+                    """, (user_id,))
+
+                    emb_id_tuple = tuple(id_[0] for id_ in embedding_ids)
+                    
+                    # Удаляем сами эмбэддинги
+                    cur.execute("""
+                        DELETE FROM embeddings
+                        WHERE id = ANY(%s)
+                    """, (list(emb_id_tuple),))
+                
+                # Удаляем пользователя
+                cur.execute("""
+                    DELETE FROM users
+                    WHERE id = %s
+                """, (user_id,))
+                
+                conn.commit()
+                
+                deleted_count = cur.rowcount
+                if deleted_count > 0:
+                    log_info(f"Пользователь с ID {user_id} и связанные данные успешно удалены.")
+                    return True
+                else:
+                    log_debug(f"Пользователь с ID {user_id} не найден.")
+                    return False
+                    
+            except Exception as e:
+                conn.rollback()
+                log_error(f"Ошибка при удалении пользователя с ID {user_id}: {e}")
+                raise
+
+
+if __name__ == "__main__":
+    log_debug("Создание таблиц.")
+    
+    try:
+        create_embeddings_tables()
+        log_debug("База данных успешно инициализирована!")
+    except Exception as e:
+        log_error(f"Ошибка при инициализации базы данных: {e}")
+        sys.exit(1)

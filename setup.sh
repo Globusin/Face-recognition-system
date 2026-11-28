@@ -199,7 +199,7 @@ sudo -u postgres psql \
 
 echo "Создание таблиц"
 cd "$PROJECT_DIR"
-"$VENV_PYTHON" utils/db_connect.py
+"$VENV_PYTHON" -m utils.storage.db_connect
 
 if [ -f "$FRONTEND_DIR/package-lock.json" ]; then
     if ! node -e '

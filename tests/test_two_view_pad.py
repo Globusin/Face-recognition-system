@@ -11,10 +11,10 @@ from unittest.mock import patch
 import numpy as np
 import cv2
 
-from utils.frame_pairing import CameraFrame, FramePair
-from utils.maintenance import maintenance
-from utils.stereo_calibration import CalibrationSession
-from utils.two_view_pad import (DEFAULT_LIMITS, LANDMARK_GROUPS, GROUP_LENGTHS,
+from utils.capture.frame_pairing import CameraFrame, FramePair
+from utils.common.maintenance import maintenance
+from utils.stereo.stereo_calibration import CalibrationSession
+from utils.stereo.two_view_pad import (DEFAULT_LIMITS, LANDMARK_GROUPS, GROUP_LENGTHS,
                                 extract_face_points, inspect_pair, measure_face_geometry,
                                 measurement_limits, wait_for_measurement_pair)
 
@@ -75,7 +75,7 @@ class StereoFaceTests(unittest.TestCase):
         self.pair.secondary.timestamp_ns -= 58_200_000
         manager.get_pair.return_value = self.pair
         selection = {}
-        with patch('utils.two_view_pad.time.monotonic', side_effect=[0, 0, 0, 6, 6]):
+        with patch('utils.stereo.two_view_pad.time.monotonic', side_effect=[0, 0, 0, 6, 6]):
             with self.assertRaisesRegex(ValueError, '58.2.*10.0'):
                 wait_for_measurement_pair(manager, DEFAULT_LIMITS, selection)
         self.assertEqual(selection['skipped_pairs'], 1)
@@ -161,14 +161,14 @@ class StereoFaceTests(unittest.TestCase):
                 if mode == 'future':
                     self.pair.secondary.timestamp_ns = timestamp + 500_000_000
                 size = [640, 360] if mode == 'size' else [1280, 720]
-                with patch('utils.two_view_pad.extract_face_points') as extract:
+                with patch('utils.stereo.two_view_pad.extract_face_points') as extract:
                     result = inspect_pair(self.pair, self.arrays, size, DEFAULT_LIMITS)
                     self.assertEqual(result['status'], 'not_measurable')
                     extract.assert_not_called()
 
     def test_measured_preview_does_not_modify_original(self):
-        with patch('utils.two_view_pad.extract_face_points', side_effect=self.project()), \
-                patch('utils.stereo_timing.timing_depth_uncertainty', return_value={}):
+        with patch('utils.stereo.two_view_pad.extract_face_points', side_effect=self.project()), \
+                patch('utils.stereo.stereo_timing.timing_depth_uncertainty', return_value={}):
             result = inspect_pair(self.pair, self.arrays, [1280, 720], DEFAULT_LIMITS,
                                   temporal_context={'previous': {}, 'profile': {}})
         self.assertEqual(result['status'], 'measured')
@@ -178,8 +178,8 @@ class StereoFaceTests(unittest.TestCase):
     def test_dense_failure_preserves_sparse_measurement(self):
         for raises in (False, True):
             with self.subTest(raises=raises), \
-                    patch('utils.two_view_pad.extract_face_points', side_effect=self.project()), \
-                    patch('utils.dense_stereo.measure_dense_depth',
+                    patch('utils.stereo.two_view_pad.extract_face_points', side_effect=self.project()), \
+                    patch('utils.stereo.dense_stereo.measure_dense_depth',
                           return_value=({'status': 'not_measurable', 'reason': 'Мало пикселей'}, {}),
                           side_effect=ValueError('Мало пикселей') if raises else None):
                 result = inspect_pair(self.pair, self.arrays, [1280, 720], DEFAULT_LIMITS,
@@ -193,8 +193,8 @@ class StereoFaceTests(unittest.TestCase):
             self.assertFalse(result['access_granted'])
 
     def test_sparse_failure_does_not_run_dense(self):
-        with patch('utils.two_view_pad.extract_face_points', side_effect=ValueError('Нет лица')), \
-                patch('utils.dense_stereo.measure_dense_depth') as dense:
+        with patch('utils.stereo.two_view_pad.extract_face_points', side_effect=ValueError('Нет лица')), \
+                patch('utils.stereo.dense_stereo.measure_dense_depth') as dense:
             result = inspect_pair(self.pair, self.arrays, [1280, 720], DEFAULT_LIMITS,
                                   static_diagnostic=True, dense_depth=True)
         dense.assert_not_called()
@@ -204,7 +204,7 @@ class StereoFaceTests(unittest.TestCase):
     def test_vertical_failure_keeps_diagnostics_and_both_previews(self):
         primary, secondary = self.project()
         secondary[14, 1] += 20
-        with patch('utils.two_view_pad.extract_face_points', side_effect=[primary, secondary]):
+        with patch('utils.stereo.two_view_pad.extract_face_points', side_effect=[primary, secondary]):
             result = inspect_pair(self.pair, self.arrays, [1280, 720], DEFAULT_LIMITS)
         self.assertEqual(result['status'], 'not_measurable')
         self.assertNotIn('metrics', result)
@@ -235,8 +235,8 @@ class StereoFaceTests(unittest.TestCase):
     def test_preview_failure_preserves_geometry_diagnostics(self):
         primary, secondary = self.project()
         secondary[14, 1] += 20
-        with patch('utils.two_view_pad.extract_face_points', side_effect=[primary, secondary]), \
-                patch('utils.two_view_pad.face_point_previews', side_effect=ValueError('Ошибка JPEG')):
+        with patch('utils.stereo.two_view_pad.extract_face_points', side_effect=[primary, secondary]), \
+                patch('utils.stereo.two_view_pad.face_point_previews', side_effect=ValueError('Ошибка JPEG')):
             result = inspect_pair(self.pair, self.arrays, [1280, 720], DEFAULT_LIMITS)
         self.assertEqual(result['status'], 'not_measurable')
         self.assertEqual(result['diagnostics']['worst_point_number'], 15)
@@ -258,18 +258,18 @@ class StereoFaceTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as root, \
                 patch.object(session, '_root', return_value=Path(root)), \
                 patch.object(session, '_camera_signature', return_value={'test': 'camera'}), \
-                patch('utils.stereo_calibration.get_camera_manager', return_value=manager), \
+                patch('utils.stereo.stereo_calibration.get_camera_manager', return_value=manager), \
                 patch.object(session, '_timing_context', return_value={'previous': {}, 'profile': {'report_id': 'mock'}},
                              side_effect=ValueError('Нет профиля времени') if timing_failure else None) as timing_context, \
-                patch('utils.stereo_timing.check_timing_profile'), \
-                patch('utils.stereo_timing.exposure_settings', return_value=None), \
-                patch('utils.stereo_timing.exposure_snapshot', return_value={'test': 'exposure'}), \
-                patch('utils.stereo_timing.timing_depth_uncertainty', return_value={}), \
-                patch('utils.dense_stereo.measure_dense_depth', return_value=(
+                patch('utils.stereo.stereo_timing.check_timing_profile'), \
+                patch('utils.stereo.stereo_timing.exposure_settings', return_value=None), \
+                patch('utils.stereo.stereo_timing.exposure_snapshot', return_value={'test': 'exposure'}), \
+                patch('utils.stereo.stereo_timing.timing_depth_uncertainty', return_value={}), \
+                patch('utils.stereo.dense_stereo.measure_dense_depth', return_value=(
                     {'status': 'measured', 'metrics': {'plane_rms_mm': 1}}, {'dense_depth': 'data:image/jpeg;base64,test'})), \
-                patch('utils.stereo_calibration.load_calibration',
+                patch('utils.stereo.stereo_calibration.load_calibration',
                       return_value=({'units': 'mm', 'image_size': [1280, 720], 'validation': {'fingerprint': 'mock'}}, self.arrays)), \
-                patch('utils.two_view_pad.extract_face_points', side_effect=points):
+                patch('utils.stereo.two_view_pad.extract_face_points', side_effect=points):
             result = session.measure_face('test-session', 'a' * 32, True, True, 'live', 'daylight', 65,
                                           timing_confirmed=check_timing, check_timing=check_timing,
                                           dense_depth=dense_depth, stationary_confirmed=dense_depth,
@@ -323,7 +323,7 @@ class StereoFaceTests(unittest.TestCase):
         session.active, session.session_id = True, 'test'
         cases = [dict(dense_depth=True), dict(dense_depth=True, stationary_confirmed=True, check_timing=True),
                  dict(series_id='../wrong'), dict(dense_depth='yes')]
-        with patch('utils.stereo_calibration.get_camera_manager') as manager:
+        with patch('utils.stereo.stereo_calibration.get_camera_manager') as manager:
             for options in cases:
                 with self.assertRaises(ValueError):
                     session.measure_face('test', 'a' * 32, True, True, 'live', 'daylight', 65, **options)
@@ -331,7 +331,7 @@ class StereoFaceTests(unittest.TestCase):
 
     def test_static_80ms_window_does_not_change_strict_window(self):
         self.pair.secondary.timestamp_ns -= 60_000_000
-        with patch('utils.two_view_pad.extract_face_points', side_effect=self.project()):
+        with patch('utils.stereo.two_view_pad.extract_face_points', side_effect=self.project()):
             result = inspect_pair(self.pair, self.arrays, [1280, 720],
                                   dict(DEFAULT_LIMITS, max_delta_ms=80), static_diagnostic=True)
         self.assertEqual(result['status'], 'measured')
@@ -342,8 +342,8 @@ class StereoFaceTests(unittest.TestCase):
         self.run_session(check_timing=True, timing_failure=True)
 
     def test_static_inspector_does_not_require_temporal_context(self):
-        with patch('utils.two_view_pad.extract_face_points', side_effect=self.project()), \
-                patch('utils.stereo_timing.timing_depth_uncertainty') as timing:
+        with patch('utils.stereo.two_view_pad.extract_face_points', side_effect=self.project()), \
+                patch('utils.stereo.stereo_timing.timing_depth_uncertainty') as timing:
             result = inspect_pair(self.pair, self.arrays, [1280, 720], DEFAULT_LIMITS,
                                   static_diagnostic=True)
         self.assertEqual(result['status'], 'measured')
@@ -369,7 +369,7 @@ class StereoFaceTests(unittest.TestCase):
             extract_face_points(np.zeros((240, 320, 3), np.uint8))
 
     def test_model_failure_is_not_measurable(self):
-        with patch('utils.two_view_pad.extract_face_points', side_effect=ImportError('Модель недоступна')):
+        with patch('utils.stereo.two_view_pad.extract_face_points', side_effect=ImportError('Модель недоступна')):
             result = inspect_pair(self.pair, self.arrays, [1280, 720], DEFAULT_LIMITS)
             self.assertEqual(result['status'], 'not_measurable')
             self.assertNotIn('metrics', result)
@@ -377,10 +377,10 @@ class StereoFaceTests(unittest.TestCase):
     def test_calibration_mismatch_stops_before_landmarks(self):
         session = CalibrationSession()
         session.active, session.session_id = True, 'test'
-        with patch('utils.stereo_calibration.get_camera_manager'), \
+        with patch('utils.stereo.stereo_calibration.get_camera_manager'), \
                 patch.object(session, '_camera_signature', return_value={}), \
-                patch('utils.stereo_calibration.load_calibration', side_effect=ValueError('Другие камеры')), \
-                patch('utils.two_view_pad.inspect_pair') as inspect:
+                patch('utils.stereo.stereo_calibration.load_calibration', side_effect=ValueError('Другие камеры')), \
+                patch('utils.stereo.two_view_pad.inspect_pair') as inspect:
             with self.assertRaisesRegex(ValueError, 'Другие камеры'):
                 session.measure_face('test', 'a' * 32, True, True, 'live', 'daylight', 65)
             inspect.assert_not_called()

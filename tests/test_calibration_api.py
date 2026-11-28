@@ -10,9 +10,9 @@ import numpy as np
 from unittest.mock import patch
 
 from src.app import app
-from utils.maintenance import MaintenanceMode
+from utils.common.maintenance import MaintenanceMode
 from src.monitor import run_monitoring
-from utils.stereo_calibration import CalibrationSession
+from utils.stereo.stereo_calibration import CalibrationSession
 
 
 class CalibrationApiTests(unittest.TestCase):
@@ -22,7 +22,7 @@ class CalibrationApiTests(unittest.TestCase):
 
     def test_disabled_without_configured_secret(self):
         with patch.dict('os.environ', {'CALIBRATION_ADMIN_TOKEN': ''}), \
-                patch('utils.api_security.admin_token', return_value=''):
+                patch('utils.access.api_security.admin_token', return_value=''):
             self.assertEqual(self.client.get('/api/calibration/status').status_code, 503)
 
     def test_quality_requires_token_and_stationary_confirmation(self):
@@ -64,7 +64,7 @@ class CalibrationApiTests(unittest.TestCase):
                 self.assertEqual(measure.call_args.args[9:], (True, True, 'b' * 32))
 
     def test_stereo_measurement_has_its_own_tft_state(self):
-        from utils.display import DisplayState
+        from utils.device.display import DisplayState
         gate = MaintenanceMode()
         gate.requested.set()
         gate.stereo_measuring.set()
@@ -84,7 +84,7 @@ class CalibrationApiTests(unittest.TestCase):
         session_id = 'a' * 32
         with tempfile.TemporaryDirectory() as root, patch.object(session, '_root', return_value=Path(root)), \
                 patch.dict('os.environ', {'CALIBRATION_ADMIN_TOKEN': 'local-test-secret'}), \
-                patch('utils.stereo_calibration.measure_board_geometry', return_value={'mean_error_mm': 0}), \
+                patch('utils.stereo.stereo_calibration.measure_board_geometry', return_value={'mean_error_mm': 0}), \
                 patch('src.app.calibration_session', session):
             folder = Path(root) / session_id
             folder.mkdir()
@@ -147,23 +147,22 @@ class CalibrationApiTests(unittest.TestCase):
             response = self.client.post('/api/calibration/start', headers=self.header, json={})
             self.assertEqual(response.status_code, 400)
 
-    def test_recognition_and_enrollment_blocked_during_calibration(self):
+    def test_authenticate_endpoint_disabled_and_enrollment_blocked(self):
         gate = MaintenanceMode()
         gate.requested.set()
         with patch('src.app.maintenance', gate), \
                 patch('src.app.authorize_admin', return_value=None), \
-                patch('utils.recognition.recognize_face_from_camera') as recognize, \
                 patch('src.app.create_embeddings_from_camera') as enroll:
-            self.assertEqual(self.client.post('/api/authenticate').status_code, 409)
+            # Отдельное распознавание через API удалено: маршрута нет
+            self.assertEqual(self.client.post('/api/authenticate').status_code, 405)
             self.assertEqual(self.client.post('/api/add_user?name=test').status_code, 409)
-        recognize.assert_not_called()
         enroll.assert_not_called()
 
     def test_late_result_cannot_unlock_during_calibration(self):
         gate = MaintenanceMode()
         stop = threading.Event()
 
-        def recognize():
+        def recognize(**kwargs):
             gate.requested.set()
             stop.set()
             return True, 1, 0.01
@@ -171,7 +170,7 @@ class CalibrationApiTests(unittest.TestCase):
         with patch('src.monitor.maintenance', gate), \
                 patch('src.monitor.initialize_display'), \
                 patch('src.monitor.initialize_lock_controller') as initialize, \
-                patch('src.monitor.wait_for_face', return_value=True), \
+                patch('src.monitor.FaceObservationSource'), \
                 patch('src.monitor.recognize_face_from_camera', side_effect=recognize):
             run_monitoring(stop)
         initialize.return_value.unlock.assert_not_called()

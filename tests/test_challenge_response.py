@@ -8,9 +8,9 @@ from unittest.mock import Mock, patch
 
 import numpy as np
 
-from utils.challenge_response import ChallengeFlow, FaceObservation, challenge_settings, eye_aspect_ratio, observe_face
-from utils.maintenance import MaintenanceMode
-from utils.challenge_session import ChallengeSession
+from utils.challenge.challenge_response import ChallengeFlow, FaceObservation, challenge_settings, eye_aspect_ratio, observe_face
+from utils.common.maintenance import MaintenanceMode
+from utils.challenge.challenge_session import ChallengeSession
 
 
 def observation(timestamp, eye=0.3, yaw=0.0, identity=0.0, right=None):
@@ -77,7 +77,7 @@ class ChallengeFlowTests(unittest.TestCase):
 
     def test_random_selection_contains_only_head_turns(self):
         flow = ChallengeFlow(challenge_settings({}), now=0, verify_identity=False)
-        with patch('utils.challenge_response.secrets.choice', return_value='TURN_RIGHT') as choose:
+        with patch('utils.challenge.challenge_response.secrets.choice', return_value='TURN_RIGHT') as choose:
             for timestamp in (.1, .4, .8):
                 flow.feed(observation(timestamp), timestamp)
         choose.assert_called_once_with(('TURN_LEFT', 'TURN_RIGHT'))
@@ -85,7 +85,7 @@ class ChallengeFlowTests(unittest.TestCase):
 
     def test_diagnostic_actions_accept_observations_without_embeddings(self):
         flow = ChallengeFlow(challenge_settings({'count': 1}), now=0, verify_identity=False)
-        with patch('utils.challenge_response.secrets.choice', return_value='BLINK'):
+        with patch('utils.challenge.challenge_response.secrets.choice', return_value='BLINK'):
             for timestamp, eye in ((.1, .3), (.4, .3), (.8, .3)):
                 flow.feed(FaceObservation(timestamp, eye, eye, 0), timestamp)
         flow.acknowledge_prompt(.9)
@@ -143,7 +143,7 @@ class ChallengeFlowTests(unittest.TestCase):
 
     def make_flow(self, command='BLINK'):
         flow = ChallengeFlow(challenge_settings({'count': 1}), now=0)
-        with patch('utils.challenge_response.secrets.choice', return_value=command) as choose:
+        with patch('utils.challenge.challenge_response.secrets.choice', return_value=command) as choose:
             for timestamp in (0.1, 0.4, 0.8):
                 flow.feed(observation(timestamp), timestamp)
             choose.assert_called_once()
@@ -176,7 +176,7 @@ class ChallengeFlowTests(unittest.TestCase):
 
     def test_old_actions_and_closed_baseline_do_not_count(self):
         flow = ChallengeFlow(challenge_settings({}), now=0)
-        with patch('utils.challenge_response.secrets.choice') as choose:
+        with patch('utils.challenge.challenge_response.secrets.choice') as choose:
             for timestamp in (.1, .5, 1.0):
                 flow.feed(observation(timestamp, eye=.1), timestamp)
             choose.assert_not_called()
@@ -299,8 +299,8 @@ class ChallengeSessionTests(unittest.TestCase):
         service = ChallengeSession()
         with self.assertRaises(ValueError):
             service.start(False)
-        with patch('utils.challenge_session.load_config', return_value={}), \
-                patch('utils.challenge_session.calibration_session.active', True):
+        with patch('utils.challenge.challenge_session.load_config', return_value={}), \
+                patch('utils.challenge.challenge_session.calibration_session.active', True):
             with self.assertRaises(RuntimeError):
                 service.start(True)
 
@@ -317,11 +317,11 @@ class ChallengeSessionTests(unittest.TestCase):
 
         manager.get_latest_frame.side_effect = latest
         service = ChallengeSession()
-        with patch('utils.challenge_session.maintenance', gate), \
-                patch('utils.challenge_session.calibration_session.active', False), \
-                patch('utils.challenge_session.load_config', return_value={}), \
-                patch('utils.challenge_session.get_camera_manager', return_value=manager), \
-                patch('utils.challenge_session.write_json') as save_report:
+        with patch('utils.challenge.challenge_session.maintenance', gate), \
+                patch('utils.challenge.challenge_session.calibration_session.active', False), \
+                patch('utils.challenge.challenge_session.load_config', return_value={}), \
+                patch('utils.challenge.challenge_session.get_camera_manager', return_value=manager), \
+                patch('utils.challenge.challenge_session.write_json') as save_report:
             result = service.start(True)
             self.assertTrue(entered.wait(2))
             with self.assertRaises(RuntimeError):
@@ -369,11 +369,11 @@ class ChallengeSessionTests(unittest.TestCase):
 
         manager.get_latest_frame.side_effect = latest
         service = ChallengeSession()
-        with patch('utils.challenge_session.maintenance', gate), \
-                patch('utils.challenge_session.get_camera_manager', return_value=manager), \
-                patch('utils.challenge_session.observe_face', side_effect=observe), \
-                patch('utils.challenge_response.secrets.choice', return_value='TURN_LEFT'), \
-                patch('utils.challenge_session.time.monotonic', side_effect=lambda: clock[0]), \
+        with patch('utils.challenge.challenge_session.maintenance', gate), \
+                patch('utils.challenge.challenge_session.get_camera_manager', return_value=manager), \
+                patch('utils.challenge.challenge_session.observe_face', side_effect=observe), \
+                patch('utils.challenge.challenge_response.secrets.choice', return_value='TURN_LEFT'), \
+                patch('utils.challenge.challenge_session.time.monotonic', side_effect=lambda: clock[0]), \
                 patch.object(service.cancelled, 'wait'):
             service._run(challenge_settings({'count': 1}))
         result = service.status()
@@ -386,21 +386,21 @@ class ChallengeSessionTests(unittest.TestCase):
         self.assertEqual(details[-1], 'Задания\nвыполнены')
 
     def test_missing_hardware_display_and_thread_failure_do_not_reserve_mode(self):
-        from utils.display import NullDisplay
+        from utils.device.display import NullDisplay
         for display in (None, NullDisplay()):
             gate = MaintenanceMode()
             gate.display = display
-            with patch('utils.challenge_session.maintenance', gate), \
-                    patch('utils.challenge_session.load_config', return_value={}), \
-                    patch('utils.challenge_session.calibration_session.active', False):
+            with patch('utils.challenge.challenge_session.maintenance', gate), \
+                    patch('utils.challenge.challenge_session.load_config', return_value={}), \
+                    patch('utils.challenge.challenge_session.calibration_session.active', False):
                 with self.assertRaises(RuntimeError):
                     ChallengeSession().start(True)
             self.assertFalse(gate.requested.is_set())
         gate.display = Mock()
-        with patch('utils.challenge_session.maintenance', gate), \
-                patch('utils.challenge_session.load_config', return_value={}), \
-                patch('utils.challenge_session.calibration_session.active', False), \
-                patch('utils.challenge_session.threading.Thread.start', side_effect=RuntimeError('test')):
+        with patch('utils.challenge.challenge_session.maintenance', gate), \
+                patch('utils.challenge.challenge_session.load_config', return_value={}), \
+                patch('utils.challenge.challenge_session.calibration_session.active', False), \
+                patch('utils.challenge.challenge_session.threading.Thread.start', side_effect=RuntimeError('test')):
             with self.assertRaises(RuntimeError):
                 ChallengeSession().start(True)
         self.assertFalse(gate.requested.is_set())

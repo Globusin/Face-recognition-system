@@ -1,11 +1,12 @@
 <template>
-    <form class="d-flex flex-column ga-4" style="width: min(420px, 100%); margin: 0 auto" @submit.prevent="login">
-        <h2 class="text-h5">Вход администратора</h2>
+    <v-card variant="outlined" class="pa-6"><form class="d-flex flex-column ga-4" @submit.prevent="login">
+        <h1 class="text-h5">Вход администратора</h1>
+        <p class="text-body-2 text-medium-emphasis">Введите токен устройства. Административная панель доступна только по HTTPS.</p>
         <v-text-field v-model="token" type="password" label="Токен администратора"
             autocomplete="off" variant="outlined" hide-details :disabled="busy" />
         <v-alert v-if="error" type="error" variant="tonal">{{ error }}</v-alert>
         <v-btn type="submit" prepend-icon="mdi-login" :loading="busy" :disabled="!token">Войти</v-btn>
-    </form>
+    </form></v-card>
 </template>
 
 <script>

@@ -11,8 +11,8 @@ from unittest.mock import Mock, patch
 import cv2
 import numpy as np
 
-from utils.maintenance import MaintenanceMode
-from utils.stereo_calibration import (
+from utils.common.maintenance import MaintenanceMode
+from utils.stereo.stereo_calibration import (
     CalibrationSession, board_points, find_board, load_calibration, solve_calibration,
 )
 
@@ -95,9 +95,9 @@ class CalibrationSessionTests(unittest.TestCase):
         self.addCleanup(self.directory.cleanup)
         self.gate = MaintenanceMode()
         self.patches = [
-            patch('utils.stereo_calibration.maintenance', self.gate),
-            patch('utils.stereo_calibration.load_config', return_value={'stereo_calibration': {'output_dir': self.directory.name}}),
-            patch('utils.stereo_calibration.annotated_preview', return_value='data:image/jpeg;base64,test'),
+            patch('utils.stereo.stereo_calibration.maintenance', self.gate),
+            patch('utils.stereo.stereo_calibration.load_config', return_value={'stereo_calibration': {'output_dir': self.directory.name}}),
+            patch('utils.stereo.stereo_calibration.annotated_preview', return_value='data:image/jpeg;base64,test'),
         ]
         for item in self.patches:
             item.start()
@@ -109,7 +109,7 @@ class CalibrationSessionTests(unittest.TestCase):
         camera = dict(status='online', width=640, height=480, reported_format='MJPG', reported_fps=30)
         self.manager.cameras_config = {'pair_max_delta_ms': 80}
         self.manager.get_status.return_value = dict(started=True, pairing={'paired_frames': 10}, cameras={'primary': camera, 'secondary': camera})
-        manager_patch = patch('utils.stereo_calibration.get_camera_manager', return_value=self.manager)
+        manager_patch = patch('utils.stereo.stereo_calibration.get_camera_manager', return_value=self.manager)
         manager_patch.start()
         self.addCleanup(manager_patch.stop)
         image = np.zeros((480, 640, 3), np.uint8)
@@ -121,8 +121,8 @@ class CalibrationSessionTests(unittest.TestCase):
         self.corners = np.zeros((49, 1, 2), np.float32)
 
     def observe(self):
-        with patch('utils.stereo_calibration.get_camera_manager', return_value=self.manager), \
-                patch('utils.stereo_calibration.find_board', return_value=self.corners):
+        with patch('utils.stereo.stereo_calibration.get_camera_manager', return_value=self.manager), \
+                patch('utils.stereo.stereo_calibration.find_board', return_value=self.corners):
             return self.session.observe(self.session.session_id, 0)
 
     def test_saved_pair_requires_confirmation_and_cannot_be_reused(self):

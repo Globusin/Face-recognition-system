@@ -9,7 +9,7 @@ from pathlib import Path
 import numpy as np
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
-from utils.stereo_calibration import BOARD, solve_calibration, write_json
+from utils.stereo.stereo_calibration import BOARD, solve_calibration, write_json
 
 
 def main():
