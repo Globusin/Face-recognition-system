@@ -81,6 +81,9 @@ echo "Установка Python-зависимостей"
 "$VENV_PYTHON" -m pip install --disable-pip-version-check --upgrade pip wheel
 "$VENV_PYTHON" -m pip install --disable-pip-version-check -r "$PROJECT_DIR/requirements.txt"
 
+echo "Установка модели детектора YuNet"
+"$VENV_PYTHON" "$PROJECT_DIR/scripts/install_yunet.py"
+
 mapfile -t DB_SETTINGS < <(
     "$VENV_PYTHON" - "$PROJECT_DIR/config.yaml" <<'PY'
 import sys
