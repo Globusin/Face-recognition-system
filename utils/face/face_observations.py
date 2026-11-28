@@ -426,7 +426,7 @@ class ConcurrentFaceObservationSource:
             yield observation
 
     def confirm_recovery(self, verify, deadline):
-        """После пропуска Haar заново подтверждает личность до допуска."""
+        """После пропуска детекции заново подтверждает личность до допуска."""
         while True:
             with self._condition:
                 self._check_locked(deadline)

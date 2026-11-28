@@ -253,7 +253,8 @@ def camera_frame(role):
         return jsonify({'status': 'error', 'message': 'Кадр не получен'}), 503
 
     image = frame.image
-    if role == 'primary' and request.args.get('haar') == '1':
+    if role == 'primary' and (request.args.get('detection') == '1'
+                              or request.args.get('haar') == '1'):
         face_detection_preview.enable()
         image = face_detection_preview.render(frame)
     max_width = 640

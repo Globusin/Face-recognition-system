@@ -22,7 +22,7 @@
                 <v-switch v-model="previewEnabled" label="Живой предпросмотр" hide-details
                     :disabled="!cameraStatus.preview_available"
                     @update:model-value="refreshCameraFrames" />
-                <v-switch v-model="haarPreview" label="Разметка Haar: основная камера" hide-details
+                <v-switch v-model="detectionPreview" label="Разметка детектора: основная камера" hide-details
                     :disabled="!previewEnabled || !cameraStatus.preview_available"
                     @update:model-value="refreshCameraFrames" />
             </div>
@@ -45,8 +45,8 @@
                             </v-chip>
                         </div>
                     </v-card-item>
-                    <v-chip v-if="haarPreview && camera.role === 'primary'" size="small" class="ma-2" variant="outlined">
-                        Диагностический снимок Haar
+                    <v-chip v-if="detectionPreview && camera.role === 'primary'" size="small" class="ma-2" variant="outlined">
+                        Диагностический снимок детектора
                     </v-chip>
                     <div class="camera-preview">
                         <img
@@ -167,7 +167,7 @@ export default {
         return {
             requestController: null,
             previewEnabled: false,
-            haarPreview: false,
+            detectionPreview: false,
             stopped: false,
             statusLoading: false,
             authState: {
@@ -372,7 +372,7 @@ export default {
                 }
 
                 this.cameraFrameErrors[role] = false;
-                const diagnostic = this.haarPreview && role === 'primary' ? '&haar=1' : '';
+                const diagnostic = this.detectionPreview && role === 'primary' ? '&detection=1' : '';
                 this.cameraFrameUrls[role] = `/api/cameras/${role}/frame?t=${timestamp}${diagnostic}`;
             }
         },
@@ -388,7 +388,7 @@ export default {
                 this.cameraStatus = await response.json();
                 if (!this.cameraStatus.preview_available) {
                     this.previewEnabled = false;
-                    this.haarPreview = false;
+                    this.detectionPreview = false;
                     this.cameraFrameUrls = { primary: '', secondary: '' };
                 }
             } catch (error) {
