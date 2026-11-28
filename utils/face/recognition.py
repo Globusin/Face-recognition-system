@@ -34,12 +34,7 @@ def get_embeddings_from_frame(frame, face_box=None):
                 rgb_roi, location = prepare_face_roi(
                     frame, face_box, settings.get('roi_padding', 0.30),
                 )
-            with measure_time("Формирование эмбеддингов"):
-                embeddings = face_recognition.face_encodings(
-                    rgb_roi, known_face_locations=[location],
-                    num_jitters=1, model='small',
-                )
-            return embeddings if len(embeddings) else None
+            return encode_prepared_roi(rgb_roi, location)
         except (ValueError, TypeError, OverflowError, RuntimeError, cv2.error) as error:
             log_warning(f"Ошибка обработки ROI, кадр отклонён: {error}")
             return None
@@ -47,6 +42,16 @@ def get_embeddings_from_frame(frame, face_box=None):
     with measure_time("Преобразование BGR в RGB"):
         image = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
     return _get_embeddings_from_rgb(image)
+
+
+def encode_prepared_roi(rgb_roi, location):
+    """Тот же dlib-экстрактор для локального вызова и рабочего процесса."""
+    with measure_time("Формирование эмбеддингов"):
+        embeddings = face_recognition.face_encodings(
+            rgb_roi, known_face_locations=[location],
+            num_jitters=1, model='small',
+        )
+    return embeddings if len(embeddings) else None
 
 
 def prepare_face_roi(frame, face_box, padding):

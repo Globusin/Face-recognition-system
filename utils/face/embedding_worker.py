@@ -5,21 +5,25 @@ import time
 
 from utils.common.logger import log_info, log_warning
 from utils.common.timing import measure_time
+import cv2
 
 
 def _embedding_process(connection):
     try:
         # Модель загружается один раз в отдельном интерпретаторе.
-        from utils.face.recognition import get_embeddings_from_frame
+        from utils.face.recognition import get_embeddings_from_frame, encode_prepared_roi
         connection.send(('ready', None))
         while True:
             job = connection.recv()
             if job is None:
                 return
-            frame, face_box = job
+            mode, frame, face_box = job
             try:
                 started = time.perf_counter()
-                result = get_embeddings_from_frame(frame, face_box)
+                if mode == 'roi':
+                    result = encode_prepared_roi(frame, face_box)
+                else:
+                    result = get_embeddings_from_frame(frame, face_box)
                 elapsed = (time.perf_counter() - started) * 1000
                 connection.send(('result', (result, elapsed)))
             except Exception as error:
@@ -28,6 +32,17 @@ def _embedding_process(connection):
         pass
     finally:
         connection.close()
+
+
+def prepare_job(frame, face_box):
+    """При известном ROI передаём только RGB-область с прежним padding."""
+    from utils.face.recognition import config, prepare_face_roi
+    settings = config.get('recognition_optimization', {})
+    if settings.get('roi_enabled', True) and face_box is not None:
+        roi, location = prepare_face_roi(
+            frame, face_box, settings.get('roi_padding', 0.30))
+        return 'roi', roi, location
+    return 'frame', frame, face_box
 
 
 class EmbeddingWorker:
@@ -95,10 +110,18 @@ class EmbeddingWorker:
                         self.close()
                         self.start(check)
             check()
+            try:
+                with measure_time('Подготовка задания dlib: ROI'):
+                    job = prepare_job(frame, face_box)
+            except (ValueError, TypeError, OverflowError, cv2.error) as error:
+                log_warning(f'Некорректный ROI, кадр отклонён: {error}')
+                return None
+            check()
+            log_info(f'IPC dlib: {job[0]}, передача {job[1].nbytes} байт')
             with measure_time('Формирование эмбеддингов (процесс dlib)'):
                 self.pending_since = time.monotonic()
                 with measure_time('IPC dlib: отправка кадра'):
-                    self.connection.send((frame, face_box))
+                    self.connection.send(job)
                 with measure_time('IPC dlib: ожидание результата'):
                     status, result = self._receive(self.pending_since + 10.0, check)
                 self.pending_since = None
