@@ -192,7 +192,7 @@ authentication:
 
 # P8: переключение после установки модели и перезапуска backend.
 face_detection:
-  backend: haar  # yunet после scripts/install_yunet.py; без скрытого fallback
+  backend: yunet  # yunet после scripts/install_yunet.py; без скрытого fallback
   yunet:
     model_path: "data/models/face_detection_yunet_2023mar.onnx"
     input_width: 320
