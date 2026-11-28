@@ -79,11 +79,13 @@ class EmbeddingWorker:
 
     def compute(self, frame, face_box, check):
         """Проверяет отмену, пока дочерний процесс вычисляет эмбеддинг."""
-        self.start(check)
+        with measure_time('Проверка и запуск процесса dlib'):
+            self.start(check)
         try:
             # Если прошлую сессию отменили, её результат не попадёт в новую.
             if self.pending_since is not None:
-                self._receive(self.pending_since + 10.0, check)
+                with measure_time('Ожидание результата прошлой сессии'):
+                    self._receive(self.pending_since + 10.0, check)
                 self.pending_since = None
             check()
             with measure_time('Формирование эмбеддингов (процесс dlib)'):

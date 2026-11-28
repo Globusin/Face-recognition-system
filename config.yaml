@@ -187,5 +187,5 @@ authentication:
     frame_wait_seconds: 2.0     # Общий лимит ожидания и повторного отбора наблюдения
     max_track_gap_seconds: 2.0  # Максимальный разрыв наблюдений, не вычислений dlib
     tracking_interval_seconds: 0.15  # Минимальный интервал запуска Haar в потоке сопровождения
-    tracking_missing_grace_seconds: 0.5  # Допуск пропуска Haar; до восстановления доступ запрещён
+    tracking_missing_grace_seconds: 1.0  # Допуск пропуска Haar; до восстановления доступ запрещён
     min_track_overlap: 0.25  # Начальный порог IoU, требует проверки на стенде

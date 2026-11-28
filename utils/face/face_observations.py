@@ -14,6 +14,7 @@ from utils.capture.frame_pairing import CameraFrame, FramePair
 from utils.capture.video_capture import detect_faces
 from utils.capture.camera_manager import CameraManager
 from utils.common.logger import log_debug, log_warning
+from utils.common.timing import measure_time
 
 
 CAPTURE_POLL_SECONDS = 0.1
@@ -196,8 +197,22 @@ class FaceObservationSource:
                         f'кадры {previous.primary.sequence} -> {frame.sequence}'
                     )
                     raise ObservationRejected('track_gap')
-                if box_overlap(previous.face_box, face_box) < self.min_overlap:
+
+                iou = box_overlap(previous.face_box, face_box)
+
+                log_debug(
+                    f'Haar: предыдущий ROI={previous.face_box}, '
+                    f'текущий ROI={face_box}, '
+                    f'IoU={iou:.3f}, порог={self.min_overlap:.3f}'
+                )
+
+                if iou < self.min_overlap:
+                    log_warning(
+                        f'Трек изменился: IoU={iou:.3f}, '
+                        f'порог={self.min_overlap:.3f}'
+                    )
                     raise ObservationRejected('track_changed')
+
                 track_id = previous.track_id
 
             if not fresh:
@@ -298,9 +313,21 @@ class ConcurrentFaceObservationSource:
 
     def _mark_missing(self, frame):
         with self._condition:
+            now = self.clock()
+
             if self._missing_since is None:
                 self._missing_since = frame.timestamp_ns / 1e9
-                log_debug(f'Haar: лицо временно не найдено, кадр {frame.sequence}')
+
+            missing_duration = now - self._missing_since
+            frame_age = now - frame.timestamp_ns / 1e9
+
+            log_debug(
+                f'Haar: лицо не найдено, кадр={frame.sequence}, '
+                f'возраст кадра={frame_age:.3f} с, '
+                f'потеря лица={missing_duration:.3f} с, '
+                f'лимит={self.missing_grace:.3f} с'
+            )
+
             self._condition.notify_all()
             self._check_locked()
 
@@ -390,7 +417,11 @@ class ConcurrentFaceObservationSource:
         last_used_at = None
         for _ in range(count):
             not_before = None if last_used_at is None else last_used_at + frame_delay
-            observation = self.next(deadline, not_before=not_before)
+            with measure_time('Ожидание наблюдения лица'):
+                observation = self.next(
+                    deadline,
+                    not_before=not_before,
+                )
             last_used_at = observation.primary.timestamp_ns / 1e9
             yield observation
 

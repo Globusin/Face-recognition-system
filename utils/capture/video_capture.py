@@ -46,9 +46,17 @@ def detect_faces(frame, cascade=None):
         reduced = cv2.resize(frame, (640, detection_height), interpolation=cv2.INTER_AREA)
     else:
         reduced = frame
+
     gray = cv2.cvtColor(reduced, cv2.COLOR_BGR2GRAY)
+    gray = cv2.equalizeHist(gray)
+
     with _cascade_lock:
-        faces = cascade.detectMultiScale(gray, 1.3, 5)
+        faces = cascade.detectMultiScale(
+            gray,
+            scaleFactor=1.2,
+            minNeighbors=5,
+            minSize=(40, 40),
+        )
 
     scale_x = width / gray.shape[1]
     scale_y = height / gray.shape[0]

@@ -235,6 +235,11 @@ def match_embedding(embedding):
         log_warning("Поиск в базе вернул некорректную дистанцию")
         return None, None
 
+    log_debug(
+        f'Распознавание: кандидат={user_id}, '
+        f'distance={distance:.4f}, '
+        f'порог={config.get("similarity", 0.15):.4f}'
+    )
     if distance >= config.get('similarity', 0.15):
         return None, distance
     return user_id, distance
