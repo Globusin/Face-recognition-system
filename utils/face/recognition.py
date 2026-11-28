@@ -280,7 +280,8 @@ def _confirm_fresh_after_database(observation_source, deadline, result):
     """Перед допуском проверяет новый кадр: поиск в БД мог занять время"""
     observation_source.check_cancelled(deadline)
     if result[0]:
-        observation_source.next(deadline)
+        with measure_time('Финальное свежее наблюдение после БД'):
+            observation_source.next(deadline)
     return result
 
 @recognition_db_session()
@@ -363,7 +364,8 @@ def _recognize_adaptive(observation_source, deadline, on_pair=None, embedding_wo
             )
             observation_source.check_cancelled(deadline)
             if embeddings is not None and len(embeddings):
-                evidence.add(*match_embedding(embeddings[0]))
+                with measure_time('Поиск и оценка идентичности в БД'):
+                    evidence.add(*match_embedding(embeddings[0]))
                 decision = evidence.early_decision()
                 if decision is not None:
                     break

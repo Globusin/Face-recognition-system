@@ -18,8 +18,10 @@ def _embedding_process(connection):
                 return
             frame, face_box = job
             try:
+                started = time.perf_counter()
                 result = get_embeddings_from_frame(frame, face_box)
-                connection.send(('result', result))
+                elapsed = (time.perf_counter() - started) * 1000
+                connection.send(('result', (result, elapsed)))
             except Exception as error:
                 connection.send(('error', f'{type(error).__name__}: {error}'))
     except (EOFError, BrokenPipeError):
@@ -82,21 +84,30 @@ class EmbeddingWorker:
         with measure_time('Проверка и запуск процесса dlib'):
             self.start(check)
         try:
-            # Если прошлую сессию отменили, её результат не попадёт в новую.
+            # Не ждём завершения чужой сессии в бюджете текущей.
+            # Если ответ уже готов, только отбрасываем его.
             if self.pending_since is not None:
-                with measure_time('Ожидание результата прошлой сессии'):
-                    self._receive(self.pending_since + 10.0, check)
-                self.pending_since = None
+                with measure_time('Удаление результата прошлой сессии'):
+                    if self.connection.poll(0):
+                        self.connection.recv()
+                        self.pending_since = None
+                    else:
+                        self.close()
+                        self.start(check)
             check()
             with measure_time('Формирование эмбеддингов (процесс dlib)'):
                 self.pending_since = time.monotonic()
-                self.connection.send((frame, face_box))
-                status, result = self._receive(self.pending_since + 10.0, check)
+                with measure_time('IPC dlib: отправка кадра'):
+                    self.connection.send((frame, face_box))
+                with measure_time('IPC dlib: ожидание результата'):
+                    status, result = self._receive(self.pending_since + 10.0, check)
                 self.pending_since = None
             check()
             if status != 'result':
                 raise RuntimeError(f'Ошибка процесса dlib: {result}')
-            return result
+            embeddings, elapsed = result
+            log_info(f'dlib: вычисление в дочернем процессе — {elapsed:.2f} мс')
+            return embeddings
         except (EOFError, OSError, RuntimeError) as error:
             # ObservationRejected тоже наследуется от RuntimeError.
             # При отмене сессии оставляем работающий процесс: старый ответ
@@ -106,6 +117,17 @@ class EmbeddingWorker:
                 log_warning(f'Процесс dlib: {error}')
                 self.close()
             raise
+
+    def prepare_for_session(self, check=None):
+        """Вызывается до создания сессии, чтобы прогрев не отнимал её бюджет."""
+        if self.pending_since is not None:
+            with measure_time('Очистка отменённого задания dlib'):
+                if self.connection is not None and self.connection.poll(0):
+                    self.connection.recv()
+                    self.pending_since = None
+                else:
+                    self.close()
+        self.start(check)
 
     def close(self):
         process, connection = self.process, self.connection

@@ -214,6 +214,12 @@ def run_monitoring(stop_event=None):
 
             try:
                 with maintenance.recognition():
+                    def check_worker():
+                        if stop_event.is_set():
+                            raise ObservationRejected('stopped')
+                        if maintenance.requested.is_set():
+                            raise ObservationRejected('maintenance')
+                    embedding_worker.prepare_for_session(check_worker)
                     safe_display_state(display, DisplayState.STANDBY, "Подойдите\nк камере")
                     source = FaceObservationSource(
                         get_camera_manager(), stop_event, maintenance.requested,
