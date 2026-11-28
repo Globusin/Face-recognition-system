@@ -130,6 +130,13 @@ def run_monitoring(stop_event=None):
     stereo_check = None
     try:
         liveness = liveness_settings(config)
+        log_info(
+            f"Стереопроверка: mode={liveness['mode']}, "
+            f"parallel={liveness['parallel']}, "
+            f"calibration_configured={bool(liveness['calibration_id'])}, "
+            f"mounting_confirmed={liveness['mounting_confirmed']}, "
+            f"challenge_policy={policy.challenge_mode}"
+        )
         if liveness['mode'] != 'off':
             if not liveness['calibration_id'] or not liveness['mounting_confirmed']:
                 log_warning(

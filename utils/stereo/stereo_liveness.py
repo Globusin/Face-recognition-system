@@ -373,24 +373,60 @@ class StereoCheck:
         self.source = None
 
     def __call__(self, session):
+        started = time.perf_counter()
         result = self._measure(session)
+        check_ms = (time.perf_counter() - started) * 1000
         if result is None:
             status = (CheckStatus.NOT_AVAILABLE if self.mode == 'required'
                       else CheckStatus.SKIPPED)
-            return CheckResult(status, 'stereo_not_ready')
-        session.diagnostics['stereo'] = result
-        decision = result.get('decision')
-        if decision == SPOOF:
-            # SPOOF — обнаруженная атака, независимо от режима проверки
-            return CheckResult(CheckStatus.FAIL, 'liveness_spoof')
-        if self.mode != 'required':
-            # advisory разрешить доступ не может, только запретить по SPOOF
-            return CheckResult(CheckStatus.SKIPPED, 'advisory')
-        if decision == LIVE:
-            return CheckResult(CheckStatus.PASS, 'stereo_live')
-        return CheckResult(
-            CheckStatus.NOT_AVAILABLE,
-            result.get('reason') or 'stereo_inconclusive',
+            check = CheckResult(status, 'stereo_not_ready')
+        else:
+            session.diagnostics['stereo'] = result
+            decision = result.get('decision')
+            if decision == SPOOF:
+                # SPOOF — обнаруженная атака, независимо от режима проверки
+                check = CheckResult(CheckStatus.FAIL, 'liveness_spoof')
+            elif self.mode != 'required':
+                # advisory разрешить доступ не может, только запретить по SPOOF
+                check = CheckResult(CheckStatus.SKIPPED, 'advisory')
+            elif decision == LIVE:
+                check = CheckResult(CheckStatus.PASS, 'stereo_live')
+            else:
+                check = CheckResult(
+                    CheckStatus.NOT_AVAILABLE,
+                    result.get('reason') or 'stereo_inconclusive',
+                )
+        self._log_result(result, check, check_ms)
+        return check
+
+    def _log_result(self, result, check, check_ms):
+        data = result or {}
+        features = data.get('features') or data.get('metrics') or {}
+
+        def fmt(values, key, factor=1.0):
+            value = _metric(values, key)
+            return '-' if value is None else f'{value * factor:.2f}'
+
+        # В parallel время ожидания может быть меньше времени самого замера.
+        # Не складываем эти величины и не пишем отсутствующие метрики как нули.
+        log_info(
+            f"Стереопроверка: mode={self.mode}, "
+            f"parallel={self.worker is not None}, "
+            f"decision={data.get('decision') or UNKNOWN}, "
+            f"measurement_status={data.get('status') or 'not_measured'}, "
+            f"check={check.status.value}, "
+            f"reason={data.get('reason') or check.reason}, "
+            f"check_reason={check.reason}, "
+            f"pair={data.get('pair_number', '-')}, "
+            f"delta_ms={fmt(data, 'delta_ms')}, "
+            f"points={fmt(features, 'points')}, "
+            f"plane_rms_mm={fmt(features, 'plane_rms_mm')}, "
+            f"nose_eye_mm={fmt(features, 'nose_eye_plane_difference_mm')}, "
+            f"reprojection_max_px={fmt(features, 'reprojection_max_px')}, "
+            f"vertical_max_px={fmt(features, 'vertical_max_px')}, "
+            f"timing_verified={data.get('timing_verified', False)}, "
+            f"measurement_ms={fmt(data, 'elapsed_seconds', 1000)}, "
+            f"check_ms={check_ms:.2f}"
         )
 
     def _measure(self, session):

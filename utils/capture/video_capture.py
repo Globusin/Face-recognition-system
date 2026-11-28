@@ -20,6 +20,41 @@ _cascade_lock = threading.Lock()
 _detector_lock = threading.Lock()
 _detector_settings = (load_config() or {}).get('face_detection', {})
 _yunet = None
+_detection_stats_lock = threading.Lock()
+_detection_stats = {}
+_DETECTION_LOG_INTERVAL = 5.0
+
+
+def _record_detection(backend, elapsed_ms, face_count):
+    """Ограниченная по памяти сводка; INFO не пишет каждый кадр."""
+    now = time.monotonic()
+    message = None
+    with _detection_stats_lock:
+        stats = _detection_stats.get(backend)
+        first = stats is None
+        if first:
+            stats = dict(started=now, count=0, total_ms=0.0, max_ms=0.0,
+                         empty=0, single=0, multiple=0)
+            _detection_stats[backend] = stats
+        stats['count'] += 1
+        stats['total_ms'] += elapsed_ms
+        stats['max_ms'] = max(stats['max_ms'], elapsed_ms)
+        stats['empty' if face_count == 0 else 'single' if face_count == 1
+              else 'multiple'] += 1
+        if first or now - stats['started'] >= _DETECTION_LOG_INTERVAL:
+            interval = now - stats['started']
+            message = (
+                f"Детекция лица: backend={backend}, "
+                f"интервал={interval:.2f} с, вызовов={stats['count']}, "
+                f"mean={stats['total_ms'] / stats['count']:.2f} мс, "
+                f"max={stats['max_ms']:.2f} мс, "
+                f"без лица={stats['empty']}, одно лицо={stats['single']}, "
+                f"несколько лиц={stats['multiple']}"
+            )
+            stats.update(started=now, count=0, total_ms=0.0, max_ms=0.0,
+                         empty=0, single=0, multiple=0)
+    if message is not None:
+        log_info(message)
 
 
 def _load_face_cascade():
@@ -40,17 +75,21 @@ def detect_faces(frame, cascade=None):
     """Единый интерфейс; явный cascade сохраняет совместимость с Haar."""
     global _yunet
     backend = 'haar' if cascade is not None else _detector_settings.get('backend', 'haar')
+    started = time.perf_counter()
     if backend == 'haar':
         with measure_time("Детекция лица: Haar"):
-            return detect_faces_haar(frame, cascade)
-    if backend != 'yunet':
+            faces = detect_faces_haar(frame, cascade)
+    elif backend == 'yunet':
+        with measure_time("Детекция лица: YuNet"):
+            with _detector_lock:
+                if _yunet is None:
+                    _yunet = YuNetDetector(_detector_settings.get('yunet', {}))
+                detector = _yunet
+            faces = detector.detect(frame)
+    else:
         raise ValueError(f'Неизвестный детектор: {backend}')
-    with _detector_lock:
-        if _yunet is None:
-            _yunet = YuNetDetector(_detector_settings.get('yunet', {}))
-        detector = _yunet
-    with measure_time("Детекция лица: YuNet"):
-        return detector.detect(frame)
+    _record_detection(backend, (time.perf_counter() - started) * 1000, len(faces))
+    return faces
 
 
 def detect_faces_haar(frame, cascade=None):
