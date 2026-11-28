@@ -186,6 +186,15 @@ authentication:
     max_frame_age_seconds: 1.0  # Возраст кадра с учётом детекции на Raspberry Pi
     frame_wait_seconds: 2.0     # Общий лимит ожидания и повторного отбора наблюдения
     max_track_gap_seconds: 2.0  # Максимальный разрыв наблюдений, не вычислений dlib
-    tracking_interval_seconds: 0.15  # Минимальный интервал запуска Haar в потоке сопровождения
-    tracking_missing_grace_seconds: 1.0  # Допуск пропуска Haar; до восстановления доступ запрещён
+    tracking_interval_seconds: 0.15  # Минимальный интервал запуска детектора в потоке сопровождения
+    tracking_missing_grace_seconds: 1.0  # Допуск пропуска детектора; до восстановления доступ запрещён
     min_track_overlap: 0.25  # Начальный порог IoU, требует проверки на стенде
+
+# P8: переключение после установки модели и перезапуска backend.
+face_detection:
+  backend: haar  # yunet после scripts/install_yunet.py; без скрытого fallback
+  yunet:
+    model_path: "data/models/face_detection_yunet_2023mar.onnx"
+    input_width: 320
+    score_threshold: 0.8
+    nms_threshold: 0.3

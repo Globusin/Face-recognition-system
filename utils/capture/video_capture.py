@@ -10,11 +10,16 @@ from utils.capture.camera_manager import (
 )
 from utils.common.logger import log_error, log_info
 from utils.paths import PROJECT_ROOT
+from utils.common.config_loader import load_config
+from utils.capture.yunet_detector import YuNetDetector
 from utils.common.timing import measure_time
 from utils.capture.face_detection_preview import face_detection_preview
 
 _face_cascade = None
 _cascade_lock = threading.Lock()
+_detector_lock = threading.Lock()
+_detector_settings = (load_config() or {}).get('face_detection', {})
+_yunet = None
 
 
 def _load_face_cascade():
@@ -31,8 +36,24 @@ def _load_face_cascade():
         return _face_cascade
 
 
-@measure_time("Детекция лица: Хаар")
 def detect_faces(frame, cascade=None):
+    """Единый интерфейс; явный cascade сохраняет совместимость с Haar."""
+    global _yunet
+    backend = 'haar' if cascade is not None else _detector_settings.get('backend', 'haar')
+    if backend == 'haar':
+        with measure_time("Детекция лица: Haar"):
+            return detect_faces_haar(frame, cascade)
+    if backend != 'yunet':
+        raise ValueError(f'Неизвестный детектор: {backend}')
+    with _detector_lock:
+        if _yunet is None:
+            _yunet = YuNetDetector(_detector_settings.get('yunet', {}))
+        detector = _yunet
+    with measure_time("Детекция лица: YuNet"):
+        return detector.detect(frame)
+
+
+def detect_faces_haar(frame, cascade=None):
     """Возвращает прямоугольники (x, y, w, h) на исходном кадре"""
     if cascade is None:
         cascade = _load_face_cascade()
@@ -77,10 +98,6 @@ def _has_face(frame, cascade):
 
 def wait_for_face(stop_event, check_interval=0.5, on_wait=None, cancel_event=None):
     """Проверяет по одному свежему кадру до появления лица или остановки"""
-    cascade = _load_face_cascade()
-    if cascade is None:
-        raise CameraError("Не удалось загрузить детектор лиц")
-
     manager = get_camera_manager()
     last_sequence = manager.get_last_sequence('primary')
 
@@ -99,7 +116,7 @@ def wait_for_face(stop_event, check_interval=0.5, on_wait=None, cancel_event=Non
             raise CameraError("Основная камера не отдаёт кадры")
         last_sequence = frame.sequence
 
-        faces = detect_faces(frame.image, cascade)
+        faces = detect_faces(frame.image)
         face_detection_preview.record(frame, faces, 'SEARCH')
         if faces:
             return cancel_event is None or not cancel_event.is_set()
@@ -126,10 +143,6 @@ def capture_face_frames(frames_count, timeout=10, frame_delay=0.15):
         return []
 
     manager = get_camera_manager()
-    cascade = _load_face_cascade()
-    if cascade is None:
-        return []
-
     frames = []
     deadline = time.monotonic() + timeout
     last_captured_at = None
@@ -158,7 +171,7 @@ def capture_face_frames(frames_count, timeout=10, frame_delay=0.15):
 
                 if last_captured_at is not None and captured_at - last_captured_at < frame_delay:
                     continue
-                faces = detect_faces(camera_frame.image, cascade)
+                faces = detect_faces(camera_frame.image)
                 face_detection_preview.record(camera_frame, faces, 'SERIES')
                 if len(faces) != 1:
                     continue

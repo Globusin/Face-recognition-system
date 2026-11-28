@@ -166,7 +166,7 @@ class FaceObservationSource:
             if self.current is not None:
                 gap = (frame.timestamp_ns - self.current.primary.timestamp_ns) / 1e9
                 log_debug(
-                    f'Haar: кадр {frame.sequence}, лиц={len(faces)}, '
+                    f'Детектор: кадр {frame.sequence}, лиц={len(faces)}, '
                     f'детекция={(self.clock() - detection_started) * 1000:.1f} мс, '
                     f'интервал наблюдений={gap:.3f} с'
                 )
@@ -201,7 +201,7 @@ class FaceObservationSource:
                 iou = box_overlap(previous.face_box, face_box)
 
                 log_debug(
-                    f'Haar: предыдущий ROI={previous.face_box}, '
+                    f'Детектор: предыдущий ROI={previous.face_box}, '
                     f'текущий ROI={face_box}, '
                     f'IoU={iou:.3f}, порог={self.min_overlap:.3f}'
                 )
@@ -277,7 +277,7 @@ class ConcurrentFaceObservationSource:
             raise ValueError('Интервал сопровождения должен быть положительным')
         self.missing_grace = float(missing_grace)
         if not math.isfinite(self.missing_grace) or not 0 <= self.missing_grace <= source.max_gap:
-            raise ValueError('Допуск пропусков Haar должен быть в пределах разрыва трека')
+            raise ValueError('Допуск пропусков детекции должен быть в пределах разрыва трека')
         self._condition = threading.Condition()
         self._latest = source.current
         self._missing_since = None
@@ -322,7 +322,7 @@ class ConcurrentFaceObservationSource:
             frame_age = now - frame.timestamp_ns / 1e9
 
             log_debug(
-                f'Haar: лицо не найдено, кадр={frame.sequence}, '
+                f'Детектор: лицо не найдено, кадр={frame.sequence}, '
                 f'возраст кадра={frame_age:.3f} с, '
                 f'потеря лица={missing_duration:.3f} с, '
                 f'лимит={self.missing_grace:.3f} с'
@@ -353,7 +353,7 @@ class ConcurrentFaceObservationSource:
                             self._check_locked()
                             self._recovery_sequence = observation.primary.sequence
                             log_debug(
-                                f'Haar: лицо восстановлено через '
+                                f'Детектор: лицо восстановлено через '
                                 f'{self.clock() - self._missing_since:.3f} с'
                             )
                             self._missing_since = None
