@@ -229,6 +229,39 @@ class DiagnosticsTests(unittest.TestCase):
                     diagnostics.measure(self.pair)
         self.assertEqual(load.call_count, 1)
 
+    def test_preload_reuses_calibration_in_first_measurement(self):
+        arrays = {}
+        with patch('utils.stereo.stereo_liveness.camera_signature',
+                   return_value=self.metadata['cameras']), \
+                patch('utils.stereo.stereo_liveness.load_calibration',
+                      return_value=(self.metadata, arrays)) as load, \
+                patch('utils.stereo.stereo_liveness.measure_pair',
+                      return_value={'decision': LIVE}) as measure:
+            diagnostics = StereoLivenessDiagnostics(
+                self.manager, self.settings, 'data/calibration', dict(DEFAULT_LIMITS),
+            )
+            self.assertTrue(diagnostics.preload())
+            load.assert_called_once()
+            measure.assert_not_called()
+            self.assertEqual(diagnostics.measure(self.pair)['decision'], LIVE)
+            load.assert_called_once()
+            self.assertIs(measure.call_args.args[1], arrays)
+
+    def test_failed_preload_is_not_reloaded_during_measurement(self):
+        with patch('utils.stereo.stereo_liveness.camera_signature',
+                   return_value=self.metadata['cameras']), \
+                patch('utils.stereo.stereo_liveness.load_calibration',
+                      side_effect=ValueError('нет файла')) as load, \
+                patch('utils.stereo.stereo_liveness.measure_pair') as measure:
+            diagnostics = StereoLivenessDiagnostics(
+                self.manager, self.settings, 'data/calibration', dict(DEFAULT_LIMITS),
+            )
+            self.assertFalse(diagnostics.preload())
+            with self.assertRaisesRegex(ValueError, 'нет файла'):
+                diagnostics.measure(self.pair)
+            load.assert_called_once()
+            measure.assert_not_called()
+
     def test_camera_mode_mismatch_is_rejected(self):
         with patch('utils.stereo.stereo_liveness.camera_signature', return_value={'other': 1}):
             with patch('utils.stereo.stereo_liveness.load_calibration',

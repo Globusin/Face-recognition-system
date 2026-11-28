@@ -241,6 +241,28 @@ class StereoLivenessDiagnostics:
         self._loaded = None
         self._failure = None
 
+    def preload(self):
+        """Загружает калибровку после открытия камер, до захвата для сессии.
+
+        Использует ту же проверку и тот же кэш, что и measure. Ошибка
+        не отключает политику required и не превращается в LIVE.
+        """
+        started = time.perf_counter()
+        try:
+            self._calibration()
+        except ValueError as error:
+            log_warning(
+                f'Предварительная загрузка стереокалибровки не удалась: '
+                f'{error}; время={(time.perf_counter() - started) * 1000:.2f} мс'
+            )
+            return False
+        log_info(
+            f'Стереокалибровка предварительно загружена: '
+            f"id={self.settings['calibration_id']}, "
+            f'время={(time.perf_counter() - started) * 1000:.2f} мс'
+        )
+        return True
+
     def measure(self, pair):
         metadata, arrays = self._calibration()
         if camera_signature(self.manager) != metadata['cameras']:

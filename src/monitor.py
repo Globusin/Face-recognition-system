@@ -128,6 +128,7 @@ def run_monitoring(stop_event=None):
     stereo_diagnostics = None
     stereo_worker = None
     stereo_check = None
+    calibration_prepared = False
     try:
         liveness = liveness_settings(config)
         log_info(
@@ -227,6 +228,16 @@ def run_monitoring(stop_event=None):
                         if maintenance.requested.is_set():
                             raise ObservationRejected('maintenance')
                     embedding_worker.prepare_for_session(check_worker)
+                    if stereo_diagnostics is not None and not calibration_prepared:
+                        # Реальный режим камер известен только после открытия.
+                        # Загрузка и проверка файлов выполняются до ожидания
+                        # лица и запуска тайм-аута аутентификации. При ошибке
+                        # открытия следующий цикл может повторить запуск камер.
+                        check_worker()
+                        stereo_diagnostics.manager.start()
+                        stereo_diagnostics.preload()
+                        calibration_prepared = True
+                        check_worker()
                     safe_display_state(display, DisplayState.STANDBY, "Подойдите\nк камере")
                     source = FaceObservationSource(
                         get_camera_manager(), stop_event, maintenance.requested,
