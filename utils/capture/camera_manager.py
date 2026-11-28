@@ -487,9 +487,18 @@ class CameraManager:
             'lock_file', '/tmp/face_recognition_cameras.lock'
         )
 
-        # Запись в файл не нужна, он используется только как блокировка
-        # Режим чтения позволяет открыть файл после запуска через sudo
-        descriptor = os.open(lock_path, os.O_RDONLY | os.O_CREAT, 0o666)
+        # O_CREAT для чужого файла в /tmp блокируется fs.protected_regular,
+        # даже при запуске через sudo, поэтому сначала открываем без создания
+        try:
+            descriptor = os.open(lock_path, os.O_RDONLY)
+        except FileNotFoundError:
+            try:
+                descriptor = os.open(
+                    lock_path, os.O_RDONLY | os.O_CREAT | os.O_EXCL, 0o666,
+                )
+            except FileExistsError:
+                # Другой процесс мог создать файл между открытием и созданием
+                descriptor = os.open(lock_path, os.O_RDONLY)
         self.lock_handle = os.fdopen(descriptor, 'r', encoding='utf-8')
         try:
             # Если файл уже занят, сразу выдаём ошибку и не ждём
