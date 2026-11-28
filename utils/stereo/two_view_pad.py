@@ -8,6 +8,7 @@ import numpy as np
 
 # Контур челюсти зависит от ракурса, губы — от выражения лица
 # Для первого опыта используем 31 точку бровей, глаз и носа
+STALE_PAIR = 'stale_pair'
 LANDMARK_GROUPS = ('left_eyebrow', 'right_eyebrow', 'nose_bridge',
                    'nose_tip', 'left_eye', 'right_eye')
 GROUP_LENGTHS = (5, 5, 4, 5, 6, 6)
@@ -181,6 +182,7 @@ def inspect_pair(pair, arrays, image_size, limits, temporal_context=None, *, sta
     points = {}
     diagnostics = {}
     retryable_failure = True
+    reason_code = None
     dense_previews = {}
     sparse = dict(status='not_measurable')
     dense = dict(status='not_measurable', reason='Не получена корректная геометрия по 31 точке') if dense_depth else dict(status='not_requested')
@@ -189,7 +191,12 @@ def inspect_pair(pair, arrays, image_size, limits, temporal_context=None, *, sta
         now = time.monotonic_ns()
         ages_ns = [now - frame.timestamp_ns for frame in frames]
         delta_ms = abs(frames[0].timestamp_ns - frames[1].timestamp_ns) / 1_000_000
-        if any(age < 0 or age > 1_000_000_000 for age in ages_ns):
+        diagnostics.update(primary_age_ms=ages_ns[0] / 1e6,
+                           secondary_age_ms=ages_ns[1] / 1e6)
+        if any(age < 0 for age in ages_ns):
+            raise ValueError('Некорректная временная метка пары кадров')
+        if any(age > 1_000_000_000 for age in ages_ns):
+            reason_code = STALE_PAIR
             raise ValueError('Пара кадров устарела')
         if delta_ms > limits['max_delta_ms']:
             raise ValueError('Кадры камер получены слишком далеко друг от друга по времени')
@@ -223,6 +230,8 @@ def inspect_pair(pair, arrays, image_size, limits, temporal_context=None, *, sta
                       retryable=retryable_failure and not isinstance(error, ImportError))
         sparse = dict(status='not_measurable', reason=str(error))
 
+    if reason_code is not None:
+        result['reason_code'] = reason_code
     result['sparse_geometry'] = sparse
     result['dense_depth'] = dense
 

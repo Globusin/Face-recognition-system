@@ -14,7 +14,7 @@ from pathlib import Path
 from utils.access.authentication import CheckResult, CheckStatus
 from utils.common.logger import log_error, log_info, log_warning
 from utils.stereo.stereo_calibration import camera_signature, load_calibration
-from utils.stereo.two_view_pad import inspect_pair
+from utils.stereo.two_view_pad import STALE_PAIR, inspect_pair
 
 LIVE = 'LIVE'
 SPOOF = 'SPOOF'
@@ -207,6 +207,7 @@ def measure_pair(pair, arrays, image_size, limits, settings, *,
         status=inspection.get('status'),
         decision=decision,
         reason=reason,
+        reason_code=inspection.get('reason_code'),
         features=features,
         metrics=inspection.get('metrics'),
         sparse=inspection.get('sparse_geometry'),
@@ -377,13 +378,16 @@ class StereoCheck:
     только сохраняется в diagnostics и не влияет на допуск
     """
 
-    def __init__(self, diagnostics, mode, worker=None, timeout=1.5):
+    def __init__(self, diagnostics, mode, worker=None, timeout=1.5, *,
+                 retry_wait_seconds=5.0, clock=time.monotonic):
         if mode not in ('advisory', 'required'):
             raise ValueError('Стереопроверка должна быть advisory или required')
         self.diagnostics = diagnostics
         self.mode = mode
         self.worker = worker
         self.timeout = timeout
+        self.retry_wait_seconds = retry_wait_seconds
+        self.clock = clock
         self.source = None
 
     def bind(self, source):
@@ -439,6 +443,10 @@ class StereoCheck:
             f"check={check.status.value}, "
             f"reason={data.get('reason') or check.reason}, "
             f"check_reason={check.reason}, "
+            f"stale_retries={data.get('stale_retries', 0)}, "
+            f"retry_outcome={data.get('retry_outcome', '-')}, "
+            f"primary_age_ms={fmt(data.get('diagnostics') or {}, 'primary_age_ms')}, "
+            f"secondary_age_ms={fmt(data.get('diagnostics') or {}, 'secondary_age_ms')}, "
             f"pair={data.get('pair_number', '-')}, "
             f"delta_ms={fmt(data, 'delta_ms')}, "
             f"points={fmt(features, 'points')}, "
@@ -451,16 +459,64 @@ class StereoCheck:
             f"check_ms={check_ms:.2f}"
         )
 
+    @staticmethod
+    def _is_stale(result):
+        # Не повторяем SPOOF, геометрические ошибки и ошибки калибровки.
+        return (result is not None and result.get('decision') == UNKNOWN
+                and result.get('reason_code') == STALE_PAIR)
+
     def _measure(self, session):
-        if self.worker is not None:
-            return self.worker.take(session.session_id, self.timeout)
-        if self.source is None:
-            return None
+        result = None
+        retries = 0
+        outcome = 'not_needed'
         try:
-            observation = self.source.next(session.deadline)
-            if observation is None or observation.pair is None:
-                return None
-            return self.diagnostics.measure(observation.pair)
+            if self.worker is not None:
+                result = self.worker.take(session.session_id, self.timeout)
+            elif self.source is not None:
+                observation = self.source.next(session.deadline)
+                if observation is None or observation.pair is None:
+                    return None
+                result = self.diagnostics.measure(observation.pair)
+
+            # Повторный отбор через источник того же трека, в том числе
+            # после устаревания пары, измеренной параллельным потоком.
+            if self._is_stale(result):
+                outcome = 'source_unavailable'
+                if self.source is not None:
+                    retry_deadline = min(session.deadline,
+                                         self.clock() + self.retry_wait_seconds)
+                    outcome = 'limit_reached'
+                    while self._is_stale(result) and retries < 2:
+                        if self.clock() >= retry_deadline:
+                            outcome = 'selection_timeout'
+                            break
+                        previous = result.get('pair_number')
+                        observation = self.source.next(retry_deadline)
+                        if observation is None or observation.pair is None:
+                            outcome = 'pair_unavailable'
+                            break
+                        if observation.track_id != session.tracked_face_id:
+                            outcome = 'track_changed'
+                            break
+                        if self.clock() >= retry_deadline:
+                            outcome = 'selection_timeout'
+                            break
+                        pair = observation.pair
+                        if previous is None or pair.number <= previous:
+                            outcome = 'pair_not_new'
+                            break
+                        retries += 1
+                        log_info(
+                            f'Стереопроверка: устаревшая пара {previous}, '
+                            f'повторный отбор {retries}/2, новая пара {pair.number}'
+                        )
+                        result = self.diagnostics.measure(pair)
+                        if not self._is_stale(result):
+                            outcome = 'remeasured'
+                            break
         except Exception as error:
+            outcome = 'interrupted'
             log_warning(f'Стерео-проверка недоступна: {error}')
-            return None
+        if result is not None:
+            result = dict(result, stale_retries=retries, retry_outcome=outcome)
+        return result

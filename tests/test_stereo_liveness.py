@@ -172,6 +172,17 @@ class MeasurementTests(unittest.TestCase):
         self.assertFalse(result['timing_verified'])
         self.assertEqual(result['decision_source'], 'rule_based')
 
+    def test_stale_pair_has_machine_readable_reason(self):
+        with patch('utils.stereo.two_view_pad.time.monotonic_ns',
+                   return_value=self.pair.primary.timestamp_ns + 1_000_000_001), \
+                patch('utils.stereo.two_view_pad.extract_face_points') as extract:
+            result = measure_pair(self.pair, self.arrays, [1280, 720],
+                                  DEFAULT_LIMITS, self.settings)
+        self.assertEqual(result['decision'], UNKNOWN)
+        self.assertEqual(result['reason_code'], 'stale_pair')
+        self.assertGreater(result['diagnostics']['primary_age_ms'], 1000)
+        extract.assert_not_called()
+
     def test_curved_surface_is_live(self):
         result = self.measure(self.curved)
         self.assertEqual(result['decision'], LIVE)
@@ -368,6 +379,79 @@ class StereoCheckTests(unittest.TestCase):
     def test_missing_data_required_is_unavailable(self):
         check = StereoCheck(self.diagnostics, 'required')
         self.assertEqual(check(self.session).status, CheckStatus.NOT_AVAILABLE)
+
+    def stale(self, number):
+        return dict(decision=UNKNOWN, reason='Пара кадров устарела',
+                    reason_code='stale_pair', pair_number=number)
+
+    def retry_source(self, *numbers):
+        source = Mock()
+        source.next.side_effect = [
+            SimpleNamespace(pair=SimpleNamespace(number=n), track_id='track-1')
+            for n in numbers
+        ]
+        return source
+
+    def test_stale_pair_is_replaced_by_new_pair_of_same_track(self):
+        self.diagnostics.measure.side_effect = [
+            self.stale(1), dict(decision=LIVE, pair_number=2),
+        ]
+        source = self.retry_source(1, 2)
+        check = StereoCheck(self.diagnostics, 'required', clock=lambda: 10.0)
+        check.bind(source)
+        self.assertEqual(check(self.session).status, CheckStatus.PASS)
+        self.assertEqual(self.session.diagnostics['stereo']['stale_retries'], 1)
+        self.assertEqual(source.next.call_args.args[0], 15.0)
+
+    def test_stale_retries_are_limited(self):
+        self.diagnostics.measure.side_effect = [self.stale(n) for n in (1, 2, 3)]
+        check = StereoCheck(self.diagnostics, 'required', clock=lambda: 10.0)
+        check.bind(self.retry_source(1, 2, 3))
+        self.assertEqual(check(self.session).status, CheckStatus.NOT_AVAILABLE)
+        self.assertEqual(self.diagnostics.measure.call_count, 3)
+        self.assertEqual(self.session.diagnostics['stereo']['stale_retries'], 2)
+
+    def test_spoof_and_geometric_unknown_are_not_retried(self):
+        for decision, status in ((SPOOF, CheckStatus.FAIL),
+                                 (UNKNOWN, CheckStatus.SKIPPED)):
+            with self.subTest(decision=decision):
+                self.diagnostics.measure.reset_mock()
+                self.diagnostics.measure.return_value = dict(decision=decision, pair_number=1)
+                check = StereoCheck(self.diagnostics, 'advisory', clock=lambda: 10.0)
+                check.bind(self.retry_source(1, 2))
+                self.assertEqual(check(self.session).status, status)
+                self.diagnostics.measure.assert_called_once()
+
+    def test_retry_respects_session_deadline(self):
+        self.diagnostics.measure.return_value = self.stale(1)
+        check = StereoCheck(self.diagnostics, 'required', clock=lambda: 100.0)
+        check.bind(self.retry_source(1, 2))
+        self.assertEqual(check(self.session).status, CheckStatus.NOT_AVAILABLE)
+        self.diagnostics.measure.assert_called_once()
+
+    def test_retry_rejects_repeated_pair_and_changed_track(self):
+        for number, track in ((1, 'track-1'), (2, 'other')):
+            with self.subTest(number=number, track=track):
+                self.diagnostics.measure.reset_mock()
+                self.diagnostics.measure.return_value = self.stale(1)
+                source = self.retry_source(1)
+                first = SimpleNamespace(pair=SimpleNamespace(number=1), track_id='track-1')
+                second = SimpleNamespace(pair=SimpleNamespace(number=number), track_id=track)
+                source.next.side_effect = [first, second]
+                check = StereoCheck(self.diagnostics, 'required', clock=lambda: 10.0)
+                check.bind(source)
+                self.assertEqual(check(self.session).status, CheckStatus.NOT_AVAILABLE)
+                self.diagnostics.measure.assert_called_once()
+
+    def test_stale_worker_result_can_be_replaced(self):
+        worker = Mock()
+        worker.take.return_value = self.stale(1)
+        self.diagnostics.measure.return_value = dict(decision=LIVE, pair_number=2)
+        check = StereoCheck(self.diagnostics, 'required', worker=worker,
+                            clock=lambda: 10.0)
+        check.bind(self.retry_source(2))
+        self.assertEqual(check(self.session).status, CheckStatus.PASS)
+        self.diagnostics.measure.assert_called_once()
 
     def test_parallel_uses_worker_result(self):
         worker = Mock()

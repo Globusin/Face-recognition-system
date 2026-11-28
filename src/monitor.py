@@ -160,6 +160,7 @@ def run_monitoring(stop_event=None):
                 stereo_check = StereoCheck(
                     stereo_diagnostics, liveness['mode'],
                     worker=worker, timeout=liveness['result_timeout'],
+                    retry_wait_seconds=stereo_diagnostics.limits['pair_wait_seconds'],
                 )
     except ValueError as error:
         # Диагностика не должна мешать работе монитора
